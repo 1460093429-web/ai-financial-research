@@ -4,6 +4,7 @@ import matplotlib.pyplot as plt
 import yfinance as yf
 
 from openai import OpenAI
+from config import OPENAI_API_KEY
 
 from reportlab.platypus import (
     SimpleDocTemplate,
@@ -18,11 +19,11 @@ from reportlab.lib.styles import getSampleStyleSheet
 # OPENAI CLIENT
 # =========================
 
-client = OpenAI(
+if not OPENAI_API_KEY:
 
-    api_key="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"
+    raise ValueError("OPENAI_API_KEY is not set. Please configure it in .env.")
 
-)
+client = OpenAI(api_key=OPENAI_API_KEY)
 
 # =========================
 # RSS FEEDS
