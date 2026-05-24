@@ -1,0 +1,33 @@
+name: Stock Monitor
+
+on:
+  schedule:
+    - cron: '0 1 * * *'  # Runs daily at 9am Beijing time (1am UTC)
+  workflow_dispatch:       # Allow manual trigger
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    
+    - name: Install dependencies
+      run: |
+        pip install requests yfinance schedule python-dotenv openai
+    
+    - name: Run monitor
+      env:
+        OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        FMP_API_KEY: ${{ secrets.FMP_API_KEY }}
+        EMAIL_ADDRESS: ${{ secrets.EMAIL_ADDRESS }}
+        EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+      run: |
+        python monitor.py &
+        sleep 60
+        kill %1
