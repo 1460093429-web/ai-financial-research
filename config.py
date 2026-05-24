@@ -1,2 +1,7 @@
-OPENAI_API_KEY = "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"
-FMP_API_KEY = "cWWFp2ye7vQFBCIaDMtH3WinRwyzd0Vo"
+from dotenv import load_dotenv
+import os
+
+load_dotenv()
+
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+FMP_API_KEY = os.getenv("FMP_API_KEY")
