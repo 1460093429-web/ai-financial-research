@@ -82,7 +82,22 @@ def run_value_investing_analysis():
             })
     add_news_sentiment(company_metrics)
     analysis = analyze_with_openai(company_metrics)
-    return company_metrics, analysis
+    return {
+        "company_metrics": company_metrics,
+        "analysis": analysis,
+        "ai_analysis": analysis,
+    }
+
+def unpack_value_investing_result(result):
+    if isinstance(result, tuple) and len(result) == 2:
+        return result
+
+    if isinstance(result, dict):
+        company_metrics = result.get("company_metrics") or result.get("metrics") or []
+        analysis = result.get("ai_analysis") or result.get("analysis") or ""
+        return company_metrics, analysis
+
+    raise ValueError("Unexpected value investing analysis result format.")
 
 @st.cache_data(ttl=3600)
 def get_options_data(ticker):
@@ -306,7 +321,8 @@ with tabs[4]:
     if st.button("Run Analysis", key="value_investing_run"):
         try:
             with st.spinner("Loading supply chain metrics and AI value analysis..."):
-                company_metrics, analysis = run_value_investing_analysis()
+                result = run_value_investing_analysis()
+                company_metrics, analysis = unpack_value_investing_result(result)
 
             valid_metrics = [item for item in company_metrics if not item.get("error")]
             moat_scores = extract_moat_scores(analysis or "", [item["name"] for item in valid_metrics])
