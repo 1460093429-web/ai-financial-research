@@ -130,6 +130,77 @@ with tabs[1]:
         data["Vol_Ratio"] = data["Volume"] / data["Vol_MA20"]
         st.bar_chart(data["Volume"].tail(30))
         st.metric("Volume Ratio (vs 20d avg)", f"{data['Vol_Ratio'].iloc[-1]:.2f}x")
+        # Options Chain Chart
+        st.subheader("Options Chain Visualization")
+        with st.spinner("Loading options chain..."):
+            try:
+                import plotly.graph_objects as go
+                from plotly.subplots import make_subplots
+
+                stock_opt = yf.Ticker(ticker)
+                current_price_opt = stock_opt.history(period="1d")["Close"].iloc[-1]
+                exp_date_opt = stock_opt.options[0]
+                chain_opt = stock_opt.option_chain(exp_date_opt)
+                calls_opt = chain_opt.calls
+                puts_opt = chain_opt.puts
+
+                price_range = 0.2
+                calls_f = calls_opt[
+                    (calls_opt["strike"] >= current_price_opt * (1 - price_range)) &
+                    (calls_opt["strike"] <= current_price_opt * (1 + price_range))
+                ]
+                puts_f = puts_opt[
+                    (puts_opt["strike"] >= current_price_opt * (1 - price_range)) &
+                    (puts_opt["strike"] <= current_price_opt * (1 + price_range))
+                ]
+
+                fig = make_subplots(
+                    rows=1, cols=2,
+                    subplot_titles=["Open Interest by Strike", "IV Skew"]
+                )
+
+                fig.add_trace(go.Bar(
+                    x=calls_f["strike"], y=calls_f["openInterest"],
+                    name="Call OI", marker_color="green", opacity=0.7
+                ), row=1, col=1)
+
+                fig.add_trace(go.Bar(
+                    x=puts_f["strike"], y=puts_f["openInterest"],
+                    name="Put OI", marker_color="red", opacity=0.7
+                ), row=1, col=1)
+
+                fig.add_trace(go.Scatter(
+                    x=calls_f["strike"], y=calls_f["impliedVolatility"] * 100,
+                    name="Call IV", line=dict(color="lightgreen", width=2)
+                ), row=1, col=2)
+
+                fig.add_trace(go.Scatter(
+                    x=puts_f["strike"], y=puts_f["impliedVolatility"] * 100,
+                    name="Put IV", line=dict(color="salmon", width=2)
+                ), row=1, col=2)
+
+                fig.add_vline(x=current_price_opt, line_dash="dash",
+                             line_color="yellow",
+                             annotation_text=f"${current_price_opt:.2f}")
+
+                fig.update_layout(
+                    template="plotly_dark",
+                    height=400,
+                    barmode="overlay",
+                    title=f"{ticker} Options Chain - Expiry: {exp_date_opt}"
+                )
+
+                st.plotly_chart(fig, use_container_width=True)
+
+                col1, col2, col3 = st.columns(3)
+                total_call_oi = calls_opt["openInterest"].sum()
+                total_put_oi = puts_opt["openInterest"].sum()
+                col1.metric("Total Call OI", f"{total_call_oi:,}")
+                col2.metric("Total Put OI", f"{total_put_oi:,}")
+                col3.metric("P/C Ratio", f"{total_put_oi/total_call_oi:.2f}")
+
+            except Exception as e:
+                st.warning("Options chain temporarily unavailable.")
     except:
         st.warning("Technical data temporarily unavailable.")
 
