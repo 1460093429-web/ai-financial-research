@@ -149,7 +149,11 @@ with tabs[2]:
     ticker_opt = st.selectbox("Select Stock", WATCHLIST, key="opt")
 
     with st.spinner("Loading options data..."):
+    try:
         opt = get_options_data(ticker_opt)
+    except Exception as e:
+        st.error(f"Options data temporarily unavailable: {e}")
+        st.stop()
 
     col1, col2, col3 = st.columns(3)
     col1.metric("Current Price", f"${opt['current_price']:.2f}")
