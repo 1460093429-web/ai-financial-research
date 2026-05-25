@@ -18,9 +18,11 @@ from config import OPENAI_API_KEY
 from supply_chain_analyzer import (
     COMPANIES,
     DATA_SOURCE_DISCLAIMER,
+    add_news_sentiment,
     analyze_with_openai,
     compute_metrics,
     format_fx_rate,
+    format_large_number,
 )
 
 YFINANCE_CACHE_DIR = r"C:\Temp\yfinance_cache"
@@ -78,6 +80,7 @@ def run_value_investing_analysis():
                 "aliases": company.aliases,
                 "error": str(exc),
             })
+    add_news_sentiment(company_metrics)
     analysis = analyze_with_openai(company_metrics)
     return company_metrics, analysis
 
@@ -361,6 +364,53 @@ with tabs[4]:
 
             st.subheader("Key Metrics")
             st.dataframe(pd.DataFrame(table_rows), use_container_width=True, hide_index=True)
+
+            quarterly_rows = []
+            analyst_rows = []
+            sentiment_rows = []
+            for item in company_metrics:
+                if item.get("error"):
+                    continue
+
+                for quarter in item.get("quarterly_financials_trend", []):
+                    quarterly_rows.append({
+                        "Company": item["name"],
+                        "Symbol": item["symbol_used"],
+                        "Quarter": quarter.get("date") or "N/A",
+                        "Revenue": format_large_number(quarter.get("revenue"), item.get("financial_currency") or ""),
+                        "Gross Margin": "N/A" if quarter.get("gross_margin_pct") is None else f"{quarter['gross_margin_pct']:.2f}%",
+                    })
+
+                targets = item.get("analyst_targets") or {}
+                analyst_rows.append({
+                    "Company": item["name"],
+                    "Symbol": item["symbol_used"],
+                    "Current Price": "N/A" if targets.get("current_price") is None else f"{targets['current_price']:,.2f}",
+                    "Target Price": "N/A" if targets.get("target_price") is None else f"{targets['target_price']:,.2f}",
+                    "Upside": "N/A" if targets.get("upside_pct") is None else f"{targets['upside_pct']:.2f}%",
+                    "Recommendation": targets.get("recommendation") or "N/A",
+                    "Recommendation Mean": "N/A" if targets.get("recommendation_mean") is None else f"{targets['recommendation_mean']:.2f}",
+                })
+
+                headlines = item.get("news_headlines") or []
+                sentiment_rows.append({
+                    "Company": item["name"],
+                    "Symbol": item["symbol_used"],
+                    "Sentiment Summary": item.get("news_sentiment_summary") or "N/A",
+                    "Recent Headlines": "\n".join(headline.get("title", "") for headline in headlines[:3]) or "N/A",
+                })
+
+            st.subheader("Quarterly Financials")
+            if quarterly_rows:
+                st.dataframe(pd.DataFrame(quarterly_rows), use_container_width=True, hide_index=True)
+            else:
+                st.info("Quarterly financials were not available from yfinance.")
+
+            st.subheader("Analyst Targets")
+            st.dataframe(pd.DataFrame(analyst_rows), use_container_width=True, hide_index=True)
+
+            st.subheader("News Sentiment")
+            st.dataframe(pd.DataFrame(sentiment_rows), use_container_width=True, hide_index=True)
 
             st.caption(DATA_SOURCE_DISCLAIMER)
             st.subheader("AI Analysis")
