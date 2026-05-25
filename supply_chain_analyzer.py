@@ -10,7 +10,7 @@ import streamlit as st
 import yfinance as yf
 from openai import OpenAI
 
-from config import OPENAI_API_KEY
+import streamlit as st
 
 
 OPENAI_MODEL = "gpt-4o-mini"
@@ -346,8 +346,7 @@ Financial metrics:
 
 
 def analyze_with_openai(company_metrics: List[Dict[str, Any]]) -> str:
-    if not OPENAI_API_KEY:
-        raise ValueError("Missing OPENAI_API_KEY in config.py/.env")
+   
 
     client = OpenAI(api_key=st.secrets.get("OPENAI_API_KEY", os.getenv("OPENAI_API_KEY")))
     response = client.chat.completions.create(
