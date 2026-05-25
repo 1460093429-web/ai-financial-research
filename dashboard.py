@@ -9,10 +9,19 @@ from datetime import datetime
 import json
 import feedparser
 import os
+import re
+import plotly.express as px
 from openai import OpenAI
 from financials import get_financial_data
 from ai_analysis import analyze_financials
 from config import OPENAI_API_KEY
+from supply_chain_analyzer import (
+    COMPANIES,
+    DATA_SOURCE_DISCLAIMER,
+    analyze_with_openai,
+    compute_metrics,
+    format_fx_rate,
+)
 
 YFINANCE_CACHE_DIR = r"C:\Temp\yfinance_cache"
 os.makedirs(YFINANCE_CACHE_DIR, exist_ok=True)
@@ -40,6 +49,37 @@ def black_scholes_gamma(S, K, T, r, sigma):
         return 0
     d1 = (np.log(S/K) + (r + 0.5*sigma**2)*T) / (sigma*np.sqrt(T))
     return norm.pdf(d1) / (S * sigma * np.sqrt(T))
+
+def extract_moat_scores(analysis, company_names):
+    scores = {}
+    for company_name in company_names:
+        escaped_name = re.escape(company_name)
+        pattern = rf"{escaped_name}.*?Moat Score:\*\*\s*(\d+(?:\.\d+)?)\s*/\s*10"
+        match = re.search(pattern, analysis, flags=re.IGNORECASE | re.DOTALL)
+        if not match:
+            pattern = rf"{escaped_name}.*?Moat Score:?\s*(\d+(?:\.\d+)?)\s*/\s*10"
+            match = re.search(pattern, analysis, flags=re.IGNORECASE | re.DOTALL)
+        if match:
+            scores[company_name] = float(match.group(1))
+    return scores
+
+@st.cache_data(ttl=3600)
+def run_value_investing_analysis():
+    company_metrics = []
+    for company in COMPANIES:
+        try:
+            company_metrics.append(compute_metrics(company))
+        except Exception as exc:
+            company_metrics.append({
+                "name": company.name,
+                "segment": company.segment,
+                "requested_symbol": company.symbol,
+                "symbol_used": company.symbol,
+                "aliases": company.aliases,
+                "error": str(exc),
+            })
+    analysis = analyze_with_openai(company_metrics)
+    return company_metrics, analysis
 
 @st.cache_data(ttl=3600)
 def get_options_data(ticker):
@@ -97,7 +137,7 @@ st.title("AI Financial Research System")
 
 WATCHLIST = ["NVDA", "MU", "SNDK"]
 
-tabs = st.tabs(["📊 Overview", "📈 Technical", "🎯 Options & GEX", "🤖 AI Analysis", "📰 Daily Report", "🧠 Multi-Agent"])
+tabs = st.tabs(["📊 Overview", "📈 Technical", "🎯 Options & GEX", "🤖 AI Analysis", "Value Investing", "📰 Daily Report", "🧠 Multi-Agent"])
 
 with tabs[0]:
     st.subheader("Market Overview")
@@ -258,6 +298,77 @@ with tabs[3]:
             st.warning("AI analysis temporarily unavailable.")
 
 with tabs[4]:
+    st.subheader("Value Investing Supply Chain Analysis")
+
+    if st.button("Run Analysis", key="value_investing_run"):
+        try:
+            with st.spinner("Loading supply chain metrics and AI value analysis..."):
+                company_metrics, analysis = run_value_investing_analysis()
+
+            valid_metrics = [item for item in company_metrics if not item.get("error")]
+            moat_scores = extract_moat_scores(analysis or "", [item["name"] for item in valid_metrics])
+
+            if moat_scores:
+                moat_df = pd.DataFrame(
+                    [{"Company": name, "Moat Score": score} for name, score in moat_scores.items()]
+                )
+                fig = px.bar(
+                    moat_df,
+                    x="Company",
+                    y="Moat Score",
+                    color="Moat Score",
+                    color_continuous_scale="RdYlGn",
+                    range_y=[0, 10],
+                    title="AI-Inferred Moat Scores",
+                )
+                fig.update_layout(template="plotly_dark", height=420)
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.warning("Moat scores could not be parsed from the AI analysis text.")
+
+            table_rows = []
+            for item in company_metrics:
+                if item.get("error"):
+                    table_rows.append({
+                        "Company": item["name"],
+                        "Segment": item["segment"],
+                        "Symbol": item["symbol_used"],
+                        "Fiscal Date": "N/A",
+                        "Revenue Growth YoY": "N/A",
+                        "Free Cash Flow": "N/A",
+                        "Debt/Equity": "N/A",
+                        "Error": item["error"],
+                    })
+                    continue
+
+                fcf = item.get("free_cash_flow")
+                fcf_text = "N/A" if fcf is None else f"USD {fcf / 1e9:,.2f}B"
+                source_currency = item.get("free_cash_flow_source_currency")
+                if source_currency and source_currency != item.get("free_cash_flow_currency"):
+                    fx_rate = format_fx_rate(item.get("free_cash_flow_fx_rate_to_usd"))
+                    fcf_text += f" ({source_currency} source, FX {fx_rate})"
+
+                table_rows.append({
+                    "Company": item["name"],
+                    "Segment": item["segment"],
+                    "Symbol": item["symbol_used"],
+                    "Fiscal Date": item.get("fiscal_date") or "N/A",
+                    "Revenue Growth YoY": "N/A" if item.get("revenue_growth_yoy_pct") is None else f"{item['revenue_growth_yoy_pct']:.2f}%",
+                    "Free Cash Flow": fcf_text,
+                    "Debt/Equity": "N/A" if item.get("debt_to_equity") is None else f"{item['debt_to_equity']:.2f}",
+                    "Error": "",
+                })
+
+            st.subheader("Key Metrics")
+            st.dataframe(pd.DataFrame(table_rows), use_container_width=True, hide_index=True)
+
+            st.caption(DATA_SOURCE_DISCLAIMER)
+            st.subheader("AI Analysis")
+            st.markdown(analysis or "No analysis returned.")
+        except Exception as e:
+            st.warning(f"Value investing analysis temporarily unavailable: {e}")
+
+with tabs[5]:
     st.subheader("Daily Research Report")
     if st.button("Generate Daily Report"):
 
@@ -319,7 +430,7 @@ with tabs[4]:
 
         st.success("✅ Report generated!")
 
-with tabs[5]:
+with tabs[6]:
     st.subheader("Multi-Agent AI Research Team")
     st.caption("5 specialized AI agents analyze each stock simultaneously")
 
