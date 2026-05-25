@@ -15,8 +15,8 @@ ai_client = OpenAI(api_key=OPENAI_API_KEY)
 
 EARNINGS_DATES = {
     "NVDA": "2026-08-26",
-    "MU": "2026-06-26",
-    "SNDK": "2026-07-30",
+    "MU": "2026-07-01",
+    "SNDK": "2026-08-13",
 }
 
 def calculate_rsi(data, window=14):
@@ -90,7 +90,7 @@ st.title("AI Financial Research System")
 
 WATCHLIST = ["NVDA", "MU", "SNDK"]
 
-tabs = st.tabs(["📊 Overview", "📈 Technical", "🎯 Options & GEX", "🤖 AI Analysis", "📰 Daily Report"])
+tabs = st.tabs(["📊 Overview", "📈 Technical", "🎯 Options & GEX", "🤖 AI Analysis", "📰 Daily Report", "🧠 Multi-Agent"])
 
 with tabs[0]:
     st.subheader("Market Overview")
@@ -240,3 +240,46 @@ with tabs[4]:
                 st.warning("AI summary unavailable.")
 
         st.success("✅ Report generated!")
+        with tabs[5]:
+    st.subheader("Multi-Agent AI Research Team")
+    st.caption("5 specialized AI agents analyze each stock simultaneously")
+    
+    ticker_ma = st.selectbox("Select Stock", WATCHLIST, key="ma")
+    
+    if st.button("Run Multi-Agent Analysis"):
+        from multi_agent import agent_technical, agent_fundamental, agent_options, agent_news, agent_risk_manager
+        
+        col1, col2 = st.columns(2)
+        
+        with st.spinner("Agent 1: Technical Analysis..."):
+            technical = agent_technical(ticker_ma)
+        with col1:
+            st.subheader("🔍 Technical Analysis")
+            st.write(technical)
+        
+        with st.spinner("Agent 2: Fundamental Analysis..."):
+            fundamental = agent_fundamental(ticker_ma)
+        with col2:
+            st.subheader("📊 Fundamental Analysis")
+            st.write(fundamental)
+        
+        col3, col4 = st.columns(2)
+        
+        with st.spinner("Agent 3: Options Analysis..."):
+            options_analysis = agent_options(ticker_ma)
+        with col3:
+            st.subheader("🎯 Options Analysis")
+            st.write(options_analysis)
+        
+        with st.spinner("Agent 4: News Sentiment..."):
+            news_analysis = agent_news(ticker_ma)
+        with col4:
+            st.subheader("📰 News Sentiment")
+            st.write(news_analysis)
+        
+        with st.spinner("Agent 5: Risk Manager synthesizing..."):
+            verdict = agent_risk_manager(ticker_ma, technical, fundamental, options_analysis, news_analysis)
+        
+        st.divider()
+        st.subheader("⚖️ Final Verdict")
+        st.info(verdict)
