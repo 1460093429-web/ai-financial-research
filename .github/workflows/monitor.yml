@@ -1,33 +1,49 @@
-name: Stock Monitor
+@"
+name: Daily AI Research
 
 on:
   schedule:
-    - cron: '0 1 * * *'  # Runs daily at 9am Beijing time (1am UTC)
-  workflow_dispatch:       # Allow manual trigger
+    - cron: '30 1 * * 1-5'
+  workflow_dispatch:
 
 jobs:
-  monitor:
+  daily-research:
     runs-on: ubuntu-latest
-    
+
     steps:
     - uses: actions/checkout@v3
-    
+
     - name: Set up Python
       uses: actions/setup-python@v4
       with:
         python-version: '3.11'
-    
+
     - name: Install dependencies
       run: |
-        pip install requests yfinance schedule python-dotenv openai
-    
-    - name: Run monitor
+        pip install requests yfinance schedule python-dotenv openai feedparser numpy pandas scipy
+
+    - name: Run price monitor
       env:
         OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         FMP_API_KEY: ${{ secrets.FMP_API_KEY }}
         EMAIL_ADDRESS: ${{ secrets.EMAIL_ADDRESS }}
         EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
       run: |
-        python monitor.py &
-        sleep 60
-        kill %1
+        timeout 55 python monitor.py || true
+
+    - name: Run news sentiment
+      env:
+        OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        EMAIL_ADDRESS: ${{ secrets.EMAIL_ADDRESS }}
+        EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+      run: |
+        timeout 55 python news_sentiment.py || true
+
+    - name: Run signal system
+      env:
+        OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        FMP_API_KEY: ${{ secrets.FMP_API_KEY }}
+        EMAIL_ADDRESS: ${{ secrets.EMAIL_ADDRESS }}
+        EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+      run: |
+        timeout 55 python signal_system.py || true
