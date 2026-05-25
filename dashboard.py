@@ -22,6 +22,7 @@ def black_scholes_gamma(S, K, T, r, sigma):
     d1 = (np.log(S/K) + (r + 0.5*sigma**2)*T) / (sigma*np.sqrt(T))
     return norm.pdf(d1) / (S * sigma * np.sqrt(T))
 
+@st.cache_data(ttl=3600)  # Cache for 1 hour
 def get_options_data(ticker):
     stock = yf.Ticker(ticker)
     current_price = stock.history(period="1d")["Close"].iloc[-1]
