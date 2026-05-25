@@ -1,3 +1,5 @@
+# -*- coding: utf-8 -*-
+
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -6,10 +8,15 @@ from scipy.stats import norm
 from datetime import datetime
 import json
 import feedparser
+import os
 from openai import OpenAI
 from financials import get_financial_data
 from ai_analysis import analyze_financials
 from config import OPENAI_API_KEY
+
+YFINANCE_CACHE_DIR = r"C:\Temp\yfinance_cache"
+os.makedirs(YFINANCE_CACHE_DIR, exist_ok=True)
+yf.cache.set_cache_location(YFINANCE_CACHE_DIR)
 
 ai_client = OpenAI(api_key=OPENAI_API_KEY)
 
@@ -312,8 +319,8 @@ with tabs[4]:
 
         st.success("✅ Report generated!")
 
-    with tabs[5]:
-     st.subheader("Multi-Agent AI Research Team")
+with tabs[5]:
+    st.subheader("Multi-Agent AI Research Team")
     st.caption("5 specialized AI agents analyze each stock simultaneously")
 
     ticker_ma = st.selectbox("Select Stock", WATCHLIST, key="ma")

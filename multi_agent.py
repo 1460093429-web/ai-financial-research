@@ -1,10 +1,14 @@
+import os
+os.makedirs(r'C:\Temp\yfinance_cache', exist_ok=True)
+
 import yfinance as yf
+yf.cache.set_cache_location(r'C:\Temp\yfinance_cache')
+
 import numpy as np
 import pandas as pd
 from datetime import datetime
 from openai import OpenAI
 from dotenv import load_dotenv
-import os
 import requests
 import feedparser
 
