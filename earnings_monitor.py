@@ -10,8 +10,8 @@ WATCHLIST = {
 
 EARNINGS_DATES = {
     "NVDA": "2026-08-26",
-    "MU": "2026-06-26",
-    "SNDK": "2026-07-30",
+    "MU": "2026-07-01",
+    "SNDK": "2026-08-13",
 }
 
 def get_earnings_info(ticker):
