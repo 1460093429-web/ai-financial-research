@@ -1,0 +1,7 @@
+ticker,firm,target,rating,date,tier
+MU,UBS,1625,Buy,2026-05-26,tier1
+MU,Morgan Stanley,1200,Buy,2026-05-26,tier1
+MU,Goldman Sachs,1100,Buy,2026-05-26,tier1
+NVDA,Morgan Stanley,250,Buy,2026-05-26,tier1
+AMD,Goldman Sachs,180,Buy,2026-05-26,tier1
+INTC,JPMorgan,55,Hold,2026-05-26,tier2
