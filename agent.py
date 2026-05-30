@@ -24,7 +24,9 @@ def run_analysis():
             f.write(f"{company}: Revenue ${info['Revenue']/1e9:.1f}B, ")
             f.write(f"Net Income ${info['NetIncome']/1e9:.1f}B, ")
             f.write(f"Net Margin {info['Margin']*100:.1f}%\n")
-        f.write(f"\nAI Analysis:\n{analysis}\n")
+        f.write("\nAI Analysis:\n")
+        for ticker, brief in analysis.items():
+            f.write(f"\n=== {ticker} ===\n{brief}\n")
     
     print(f"Report saved: {filename}")
 

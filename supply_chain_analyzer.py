@@ -4,9 +4,8 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 import yfinance as yf
-from openai import OpenAI
 
-from config import OPENAI_API_KEY
+from config import get_openai_client
 
 
 OPENAI_MODEL = "gpt-4o-mini"
@@ -15,9 +14,7 @@ DATA_SOURCE_DISCLAIMER = (
     "and may be delayed, restated, incomplete, or reported in each company's filing currency. "
     "Non-USD free cash flow is converted to USD using the latest available Yahoo Finance FX close."
 )
-USD_FX_SYMBOLS = {
-    "KRW": "KRW=X",
-}
+USD_FX_SYMBOLS = {}
 _FX_RATE_TO_USD_CACHE: Dict[str, float] = {}
 
 
@@ -35,13 +32,6 @@ COMPANIES = [
     Company("Lumentum", "Optical modules", "LITE", []),
     Company("TTM Technologies", "PCB", "TTMI", []),
     Company("Micron", "HBM memory", "MU", []),
-    Company(
-        "SK Hynix",
-        "HBM memory",
-        "000660.KS",
-        ["HXSCF", "HYNIX"],
-        "Uses the Korea listing first, then OTC proxy HXSCF if yfinance data is unavailable.",
-    ),
 ]
 
 
@@ -234,10 +224,7 @@ Financial metrics:
 
 
 def analyze_with_openai(company_metrics: List[Dict[str, Any]]) -> str:
-    if not OPENAI_API_KEY:
-        raise ValueError("Missing OPENAI_API_KEY in config.py/.env")
-
-    client = OpenAI(api_key=OPENAI_API_KEY)
+    client = get_openai_client()
     response = client.chat.completions.create(
         model=OPENAI_MODEL,
         messages=[

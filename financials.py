@@ -12,6 +12,7 @@ from config import get_fmp_api_key
 logger = logging.getLogger(__name__)
 FMP_BASE_URL = "https://financialmodelingprep.com/stable"
 FMP_ACCESS_LIMIT_NOTE = "FMP unavailable due to subscription/API access limits; yfinance fallback used."
+SNDK_FINANCIAL_SOURCE_NOTE = "SNDK financial metrics use yfinance or N/A because FMP may contain reused-symbol/legacy data."
 
 tickers = {
     "NVIDIA": "NVDA",
@@ -19,10 +20,9 @@ tickers = {
     "SanDisk": "SNDK",
     "Lumentum": "LITE",
     "Rocket Lab": "RKLB",
-    "SK hynix": "000660.KS",
-    "Samsung Electronics": "005930.KS",
 }
 company_names_by_ticker = {ticker: company for company, ticker in tickers.items()}
+SNDK_MIN_FINANCIAL_DATE = "2025-01-01"
 
 
 def _number(value):
@@ -40,6 +40,20 @@ def _ratio(numerator, denominator):
 def _is_fmp_access_limit_error(exc):
     message = str(exc)
     return any(f"HTTP {status}" in message for status in (401, 402, 403))
+
+
+def _validate_company_identity(ticker, *names):
+    if ticker == "SNDK" and not any("sandisk" in (name or "").lower() for name in names):
+        raise ValueError("SNDK provider identity did not match SanDisk")
+
+
+def _current_financial_record(ticker, record):
+    if ticker != "SNDK":
+        return record
+    fiscal_date = record.get("date") if isinstance(record, dict) else None
+    if not fiscal_date or fiscal_date < SNDK_MIN_FINANCIAL_DATE:
+        return {}
+    return record
 
 
 def _empty_snapshot(ticker):
@@ -94,11 +108,19 @@ def _fetch_yfinance_snapshot(ticker):
     except Exception as exc:
         logger.warning("%s: yfinance profile lookup failed: %s", ticker, exc)
         info = {}
+    try:
+        _validate_company_identity(ticker, info.get("longName"), info.get("shortName"))
+    except ValueError as exc:
+        logger.warning("%s: yfinance data ignored: %s", ticker, exc)
+        return _empty_snapshot(ticker)
+    financial_info = info
     statement_revenue = statement_net_income = statement_date = None
     for statement_name in ("income_stmt", "financials", "quarterly_income_stmt", "quarterly_financials"):
         try:
             statement = getattr(stock, statement_name)
             if statement.empty:
+                continue
+            if ticker == "SNDK" and str(statement.columns[0])[:10] < SNDK_MIN_FINANCIAL_DATE:
                 continue
             statement_revenue = _number(statement.loc["Total Revenue"].iloc[0])
             statement_net_income = _number(statement.loc["Net Income"].iloc[0])
@@ -115,29 +137,48 @@ def _fetch_yfinance_snapshot(ticker):
         "sector": info.get("sector"),
         "industry": info.get("industry"),
         "description": info.get("longBusinessSummary"),
-        "revenue": _first(statement_revenue, _number(info.get("totalRevenue"))),
-        "net_income": _first(statement_net_income, _number(info.get("netIncomeToCommon"))),
-        "net_margin": _first(_ratio(statement_net_income, statement_revenue), _number(info.get("profitMargins"))),
-        "trailing_pe": _number(info.get("trailingPE")),
-        "forward_pe": _number(info.get("forwardPE")),
-        "price_to_book": _number(info.get("priceToBook")),
-        "price_to_sales": _number(info.get("priceToSalesTrailing12Months")),
-        "current_ratio": _number(info.get("currentRatio")),
-        "quick_ratio": _number(info.get("quickRatio")),
-        "debt_to_equity": _number(info.get("debtToEquity")),
-        "gross_margin": _number(info.get("grossMargins")),
-        "operating_margin": _number(info.get("operatingMargins")),
-        "return_on_equity": _number(info.get("returnOnEquity")),
-        "return_on_assets": _number(info.get("returnOnAssets")),
-        "analyst_target": _number(info.get("targetMeanPrice")),
-        "analyst_target_high": _number(info.get("targetHighPrice")),
-        "analyst_target_low": _number(info.get("targetLowPrice")),
+        "revenue": _first(statement_revenue, _number(financial_info.get("totalRevenue"))),
+        "net_income": _first(statement_net_income, _number(financial_info.get("netIncomeToCommon"))),
+        "net_margin": _first(_ratio(statement_net_income, statement_revenue), _number(financial_info.get("profitMargins"))),
+        "trailing_pe": _number(financial_info.get("trailingPE")),
+        "forward_pe": _number(financial_info.get("forwardPE")),
+        "price_to_book": _number(financial_info.get("priceToBook")),
+        "price_to_sales": _number(financial_info.get("priceToSalesTrailing12Months")),
+        "current_ratio": _number(financial_info.get("currentRatio")),
+        "quick_ratio": _number(financial_info.get("quickRatio")),
+        "debt_to_equity": _number(financial_info.get("debtToEquity")),
+        "gross_margin": _number(financial_info.get("grossMargins")),
+        "operating_margin": _number(financial_info.get("operatingMargins")),
+        "return_on_equity": _number(financial_info.get("returnOnEquity")),
+        "return_on_assets": _number(financial_info.get("returnOnAssets")),
+        "ev_to_ebitda": _number(financial_info.get("enterpriseToEbitda")) if ticker == "SNDK" else None,
+        "free_cash_flow_margin": _ratio(_number(financial_info.get("freeCashflow")), _number(financial_info.get("totalRevenue"))) if ticker == "SNDK" else None,
+        "revenue_growth_yoy": _number(financial_info.get("revenueGrowth")) if ticker == "SNDK" else None,
+        "gross_profit_growth": None,
+        "operating_income_growth": None,
+        "net_income_growth": _number(financial_info.get("earningsGrowth")) if ticker == "SNDK" else None,
+        "eps_growth": _number(financial_info.get("earningsGrowth")) if ticker == "SNDK" else None,
+        "analyst_target": _number(financial_info.get("targetMeanPrice")),
+        "analyst_target_high": _number(financial_info.get("targetHighPrice")),
+        "analyst_target_low": _number(financial_info.get("targetLowPrice")),
         "fiscal_date": statement_date,
         "source": "yfinance fallback",
     }
 
 
 def _overlay_fmp(snapshot, ticker, api_key):
+    if ticker == "SNDK":
+        profile = _fmp_first(ticker, "profile", api_key, limit=1)
+        quote = _fmp_first(ticker, "quote", api_key, limit=1)
+        _validate_company_identity(ticker, profile.get("companyName"), quote.get("name"))
+        snapshot.update({
+            "name": profile.get("companyName") or quote.get("name") or snapshot["name"],
+            "sector": profile.get("sector") or snapshot["sector"],
+            "industry": profile.get("industry") or snapshot["industry"],
+            "description": profile.get("description") or snapshot["description"],
+        })
+        return
+
     income = _fmp_first(ticker, "income-statement", api_key, limit=1)
     for endpoint in ("profile", "quote", "ratios", "key-metrics", "income-statement-growth"):
         try:
@@ -148,6 +189,7 @@ def _overlay_fmp(snapshot, ticker, api_key):
 
     profile = snapshot["profile"]
     quote = snapshot["quote"]
+    _validate_company_identity(ticker, profile.get("companyName"), quote.get("name"))
     ratios = snapshot["ratios"]
     metrics = snapshot["key-metrics"]
     growth = snapshot["income-statement-growth"]
@@ -158,7 +200,7 @@ def _overlay_fmp(snapshot, ticker, api_key):
         "name": profile.get("companyName") or quote.get("name") or snapshot["name"],
         "price": _first(_number(quote.get("price")), _number(profile.get("price")), snapshot["price"]),
         "change_pct": _first(_number(quote.get("changePercentage")), _number(profile.get("changePercentage")), snapshot["change_pct"]),
-        "market_cap": _first(_number(profile.get("marketCap")), _number(quote.get("marketCap")), _number(metrics.get("marketCap")), snapshot["market_cap"]),
+        "market_cap": _first(_number(quote.get("marketCap")), _number(profile.get("marketCap")), _number(metrics.get("marketCap")), snapshot["market_cap"]),
         "sector": profile.get("sector") or snapshot["sector"],
         "industry": profile.get("industry") or snapshot["industry"],
         "description": profile.get("description") or snapshot["description"],
@@ -215,7 +257,15 @@ def _add_earnings_data(snapshot, ticker, api_key):
         earnings = earnings if isinstance(earnings, list) else []
         today = date.today().isoformat()
         upcoming = sorted((item for item in earnings if item.get("date", "") >= today), key=lambda item: item["date"])
-        reported = sorted((item for item in earnings if item.get("epsActual") is not None), key=lambda item: item.get("date", ""), reverse=True)
+        reported = sorted(
+            (
+                item for item in earnings
+                if item.get("epsActual") is not None
+                and (ticker != "SNDK" or item.get("date", "") >= SNDK_MIN_FINANCIAL_DATE)
+            ),
+            key=lambda item: item.get("date", ""),
+            reverse=True,
+        )
         next_item = upcoming[0] if upcoming else {}
         last_item = reported[0] if reported else {}
         actual_eps = _number(last_item.get("epsActual"))
@@ -325,13 +375,17 @@ def get_company_snapshot(ticker):
             snapshot[field] = value
     if api_key:
         _add_analyst_data(snapshot, ticker, api_key)
-        _add_earnings_data(snapshot, ticker, api_key)
+        if ticker != "SNDK":
+            _add_earnings_data(snapshot, ticker, api_key)
     snapshot["analyst_upside_pct"] = (
         _ratio(snapshot.get("analyst_target") - snapshot["price"], snapshot["price"]) * 100
         if snapshot.get("analyst_target") is not None and snapshot.get("price")
         else None
     )
     snapshot["last_updated"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    if ticker == "SNDK":
+        snapshot["name"] = company_names_by_ticker[ticker]
+        snapshot["diagnostic_note"] = SNDK_FINANCIAL_SOURCE_NOTE
     snapshot["company_name"] = snapshot["name"]
     return snapshot
 

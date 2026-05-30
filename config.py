@@ -1,8 +1,15 @@
 from dotenv import load_dotenv
 import os
+from pathlib import Path
 from openai import OpenAI
 
-load_dotenv()
+PROJECT_ROOT = Path(__file__).resolve().parent
+DATA_DIR = PROJECT_ROOT / "data"
+CACHE_DIR = PROJECT_ROOT / "cache"
+DATA_DIR.mkdir(exist_ok=True)
+CACHE_DIR.mkdir(exist_ok=True)
+
+load_dotenv(PROJECT_ROOT / ".env")
 
 
 def _get_secret(name):

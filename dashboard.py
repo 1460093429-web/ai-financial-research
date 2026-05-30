@@ -12,25 +12,22 @@ from scipy.stats import norm
 import streamlit as st
 import yfinance as yf
 
-from ai_analysis import analyze_financials
-from config import get_openai_client
-from financials import fetch_company_news, fetch_historical_prices, get_company_snapshot as get_fmp_company_snapshot, get_financial_data
+from config import CACHE_DIR, get_openai_client
+from financials import fetch_company_news, fetch_historical_prices, get_company_snapshot as get_fmp_company_snapshot
 from macro_data import build_macro_snapshot, fetch_indicator, fetch_macro_calendar, fetch_market_series, fetch_treasury_rates
 
 
-YFINANCE_CACHE_DIR = r"C:\Temp\yfinance_cache"
+YFINANCE_CACHE_DIR = CACHE_DIR / "yfinance"
 os.makedirs(YFINANCE_CACHE_DIR, exist_ok=True)
 yf.cache.set_cache_location(YFINANCE_CACHE_DIR)
 
-WATCHLIST = ["NVDA", "MU", "SNDK", "LITE", "RKLB", "000660.KS", "005930.KS"]
+WATCHLIST = ["NVDA", "MU", "SNDK", "LITE", "RKLB"]
 COMPANY_NAMES = {
     "NVDA": "NVIDIA",
     "MU": "Micron",
     "SNDK": "SanDisk",
     "LITE": "Lumentum",
     "RKLB": "Rocket Lab",
-    "000660.KS": "SK hynix",
-    "005930.KS": "Samsung Electronics",
 }
 SUPPLY_CHAIN_ROLES = {
     "NVDA": "AI accelerators and compute platform",
@@ -38,8 +35,6 @@ SUPPLY_CHAIN_ROLES = {
     "SNDK": "Flash storage",
     "LITE": "Optical networking components",
     "RKLB": "Space systems and launch services",
-    "000660.KS": "HBM and memory manufacturing",
-    "005930.KS": "Memory, foundry, and semiconductor manufacturing",
 }
 EARNINGS_DATES = {
     "NVDA": "2026-08-26",
@@ -283,40 +278,6 @@ def render_options_section():
                 render_gex_chart(ticker, opt["gex_by_strike"], opt["current_price"])
             except Exception as exc:
                 st.warning(f"{ticker} options data unavailable: {exc}")
-
-
-def render_financial_cards(financial_data):
-    by_ticker = {item["Ticker"]: (company, item) for company, item in financial_data.items()}
-    columns = st.columns(len(WATCHLIST))
-    for column, ticker in zip(columns, WATCHLIST):
-        company, info = by_ticker.get(ticker, (COMPANY_NAMES[ticker], None))
-        with column:
-            st.markdown(f"**{ticker}**  \n{company}")
-            if not info:
-                st.caption("Financial data unavailable")
-                continue
-            st.metric("Revenue", format_money(info["Revenue"]))
-            st.metric("Net margin", f"{info['Margin'] * 100:.1f}%")
-            st.metric("P/E", format_ratio(info.get("PE")))
-            st.metric("P/B", format_ratio(info.get("PB")))
-            st.caption(f"Source: {info['Source']}")
-
-
-def render_ai_section():
-    st.caption("Generate one financial-research brief for the full watchlist and review each company separately.")
-    if st.button("Generate All-Stock AI Analysis", key="run_ai"):
-        try:
-            with st.spinner("Loading financials and generating watchlist analysis..."):
-                financial_data = get_financial_data()
-                for item in financial_data.values():
-                    item["LatestNews"] = get_cached_company_news(item["Ticker"], 5)
-                analysis = analyze_financials(financial_data, summarize_macro_snapshot(build_macro_snapshot()))
-            render_financial_cards(financial_data)
-            for ticker in WATCHLIST:
-                with st.expander(f"{ticker} | {COMPANY_NAMES[ticker]} AI Brief", expanded=True):
-                    st.markdown(analysis.get(ticker, "Analysis unavailable."))
-        except Exception as exc:
-            st.warning(f"AI analysis temporarily unavailable: {exc}")
 
 
 def render_value_section(snapshots):
@@ -701,7 +662,20 @@ def render_macro_chart(title, history):
         st.caption(f"{title}: historical data unavailable")
         return
     chart = history[["date", "value"]].dropna().set_index("date")
-    st.line_chart(chart, height=220)
+    values = pd.to_numeric(chart["value"], errors="coerce").dropna()
+    if values.empty:
+        st.caption(f"{title}: historical data unavailable")
+        return
+    minimum = float(values.min())
+    maximum = float(values.max())
+    padding = (maximum - minimum) * 0.1 or max(abs(maximum) * 0.05, 0.01)
+    figure = go.Figure(go.Scatter(x=chart.index, y=chart["value"], mode="lines"))
+    figure.update_layout(
+        height=220, margin={"l": 8, "r": 8, "t": 8, "b": 8},
+        template="plotly_dark", showlegend=False,
+        yaxis={"range": [minimum - padding, maximum + padding]},
+    )
+    st.plotly_chart(figure, use_container_width=True, key=f"macro_{title}")
     st.caption(title)
 
 
@@ -798,22 +772,18 @@ render_overview_cards(snapshots)
 st.divider()
 
 tabs = st.tabs([
-    "Technical Analysis", "Options & GEX", "AI Analysis", "Value Investing",
-    "Daily Report", "Multi-Agent Research", "Data Diagnostics", "Macro",
+    "Technical Analysis", "Options & GEX", "Value Investing",
+    "Multi-Agent Research", "Data Diagnostics", "Macro",
 ])
 with tabs[0]:
     render_technical_section()
 with tabs[1]:
     render_options_section()
 with tabs[2]:
-    render_ai_section()
-with tabs[3]:
     render_value_section(snapshots)
-with tabs[4]:
-    render_daily_report(snapshots)
-with tabs[5]:
+with tabs[3]:
     render_multi_agent_section()
-with tabs[6]:
+with tabs[4]:
     render_diagnostics(snapshots)
-with tabs[7]:
+with tabs[5]:
     render_macro_section()

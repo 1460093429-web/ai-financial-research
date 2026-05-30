@@ -1,13 +1,9 @@
 import requests
 import json
 from datetime import datetime, timedelta
-from openai import OpenAI
-from dotenv import load_dotenv
-import os
+from config import get_openai_client
 
-load_dotenv()
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-client = OpenAI(api_key=OPENAI_API_KEY)
+client = get_openai_client()
 
 WATCHLIST = {
     "NVIDIA": "NVDA",

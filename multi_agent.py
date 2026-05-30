@@ -1,19 +1,20 @@
 import os
-os.makedirs(r'C:\Temp\yfinance_cache', exist_ok=True)
+from config import CACHE_DIR
+
+YFINANCE_CACHE_DIR = CACHE_DIR / "yfinance"
+os.makedirs(YFINANCE_CACHE_DIR, exist_ok=True)
 
 import yfinance as yf
-yf.cache.set_cache_location(r'C:\Temp\yfinance_cache')
+yf.cache.set_cache_location(YFINANCE_CACHE_DIR)
 
 import numpy as np
 import pandas as pd
 from datetime import datetime
-from openai import OpenAI
-from dotenv import load_dotenv
-import requests
 import feedparser
+from config import get_openai_client
+from financials import get_financial_data
 
-load_dotenv()
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+client = get_openai_client()
 
 WATCHLIST = {
     "NVIDIA": "NVDA",
@@ -64,36 +65,36 @@ def agent_technical(ticker):
     )
 
 def agent_fundamental(ticker):
-    from config import FMP_API_KEY
-
     try:
-        url = f"https://financialmodelingprep.com/stable/income-statement?symbol={ticker}&limit=2&apikey={FMP_API_KEY}"
-        data = requests.get(url).json()
-    except:
+        financial_data = get_financial_data(ticker)
+    except Exception:
         return "Fundamental data unavailable."
 
-    if not data:
+    if not financial_data:
         return "Fundamental data unavailable."
 
-    latest = data[0]
-    prev = data[1] if len(data) > 1 else data[0]
-
-    revenue = latest.get("revenue", 0)
-    net_income = latest.get("netIncome", 0)
-    margin = net_income / revenue * 100 if revenue > 0 else 0
-    rev_growth = (latest.get("revenue", 0) - prev.get("revenue", 0)) / prev.get("revenue", 1) * 100
+    metrics = next(iter(financial_data.values()))
+    revenue = metrics["Revenue"]
+    net_income = metrics["NetIncome"]
+    margin = metrics["Margin"] * 100
+    latest_price = metrics.get("LatestPrice")
+    pe = metrics.get("PE")
+    pb = metrics.get("PB")
 
     context = f"""
 {ticker} Fundamental Data:
 - Revenue: ${revenue/1e9:.1f}B
 - Net Income: ${net_income/1e9:.1f}B
 - Net Margin: {margin:.1f}%
-- Revenue Growth YoY: {rev_growth:.1f}%
+- Latest Price: {"N/A" if latest_price is None else f"${latest_price:.2f}"}
+- PE: {"N/A" if pe is None else f"{pe:.2f}"}
+- PB: {"N/A" if pb is None else f"{pb:.2f}"}
+- Fiscal Date: {metrics.get("FiscalDate") or "N/A"}
 """
     return ask_agent(
         "expert fundamental analyst",
         context,
-        f"Analyze {ticker}'s financial health. Is the business strong? Any concerns?"
+        f"Analyze {ticker}'s financial health and valuation using the supplied values. Do not ask for financial data. Is the business strong? Any concerns?"
     )
 
 def agent_options(ticker):
