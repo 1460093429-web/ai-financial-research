@@ -6,3 +6,7 @@ venv/
 .env
 private_key.pem
 public_key.pem
+cache/
+streamlit-local.pid
+streamlit-local.stderr.log
+streamlit-local.stdout.log
