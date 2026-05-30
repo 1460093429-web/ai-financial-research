@@ -1,33 +1,21 @@
 import argparse
 import json
-import os
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
-from urllib.parse import quote
 
-import feedparser
-import streamlit as st
 import yfinance as yf
-from openai import OpenAI
 
-import streamlit as st
+from config import get_openai_client
 
 
 OPENAI_MODEL = "gpt-4o-mini"
 DATA_SOURCE_DISCLAIMER = (
     "Data source disclaimer: Financial statement metrics are pulled from yfinance/Yahoo Finance "
     "and may be delayed, restated, incomplete, or reported in each company's filing currency. "
-    "Non-USD free cash flow is converted to USD using the latest available Yahoo Finance FX close. "
-    "Analyst targets and RSS headlines are also sourced from Yahoo Finance/yfinance."
+    "Non-USD free cash flow is converted to USD using the latest available Yahoo Finance FX close."
 )
-USD_FX_SYMBOLS = {
-    "KRW": "KRW=X",
-}
+USD_FX_SYMBOLS = {}
 _FX_RATE_TO_USD_CACHE: Dict[str, float] = {}
-NEWS_HEADLINE_LIMIT = 6
-YFINANCE_CACHE_DIR = r"C:\Temp\yfinance_cache"
-os.makedirs(YFINANCE_CACHE_DIR, exist_ok=True)
-yf.cache.set_cache_location(YFINANCE_CACHE_DIR)
 
 
 @dataclass(frozen=True)
@@ -44,13 +32,6 @@ COMPANIES = [
     Company("Lumentum", "Optical modules", "LITE", []),
     Company("TTM Technologies", "PCB", "TTMI", []),
     Company("Micron", "HBM memory", "MU", []),
-    Company(
-        "SK Hynix",
-        "HBM memory",
-        "000660.KS",
-        ["HXSCF", "HYNIX"],
-        "Uses the Korea listing first, then OTC proxy HXSCF if yfinance data is unavailable.",
-    ),
 ]
 
 
@@ -88,102 +69,6 @@ def get_statement_value(statement: Any, row_names: List[str], column: Any) -> Op
         if row_name in statement.index:
             return safe_number(statement.loc[row_name, column])
     return None
-
-
-def get_quarterly_financials_trend(ticker: Any) -> List[Dict[str, Any]]:
-    quarterly_income = ticker.quarterly_financials
-    if quarterly_income is None or quarterly_income.empty:
-        return []
-
-    trend = []
-    for column in list(quarterly_income.columns)[:4]:
-        revenue = get_statement_value(quarterly_income, ["Total Revenue", "Operating Revenue"], column)
-        gross_profit = get_statement_value(quarterly_income, ["Gross Profit"], column)
-        trend.append({
-            "date": format_statement_date(column),
-            "revenue": revenue,
-            "gross_margin_pct": percent(ratio(gross_profit, revenue)),
-        })
-    return trend
-
-
-def get_current_price(ticker: Any) -> Optional[float]:
-    try:
-        current_price = safe_number(ticker.fast_info.get("last_price"))
-        if current_price is not None:
-            return current_price
-    except Exception:
-        pass
-
-    try:
-        history = ticker.history(period="5d")
-        if history is not None and not history.empty:
-            return safe_number(history["Close"].dropna().iloc[-1])
-    except Exception:
-        pass
-    return None
-
-
-def get_analyst_targets(ticker: Any) -> Dict[str, Any]:
-    targets = {}
-    try:
-        raw_targets = ticker.analyst_price_targets
-        if isinstance(raw_targets, dict):
-            targets = raw_targets
-        elif hasattr(raw_targets, "to_dict"):
-            targets = raw_targets.to_dict()
-    except Exception:
-        targets = {}
-
-    def target_value(*keys: str) -> Optional[float]:
-        normalized = {str(key).lower().replace(" ", "_"): value for key, value in targets.items()}
-        for key in keys:
-            value = safe_number(normalized.get(key.lower().replace(" ", "_")))
-            if value is not None:
-                return value
-        return None
-
-    current_price = get_current_price(ticker)
-    target_price = target_value("mean", "target_mean_price", "mean_target", "median", "target_median_price")
-    upside_pct = percent(ratio(
-        None if current_price is None or target_price is None else target_price - current_price,
-        current_price,
-    ))
-
-    recommendation = None
-    recommendation_mean = None
-    try:
-        info = ticker.get_info()
-        recommendation = info.get("recommendationKey") or info.get("recommendation")
-        recommendation_mean = safe_number(info.get("recommendationMean"))
-    except Exception:
-        try:
-            info = ticker.info
-            recommendation = info.get("recommendationKey") or info.get("recommendation")
-            recommendation_mean = safe_number(info.get("recommendationMean"))
-        except Exception:
-            pass
-
-    return {
-        "current_price": current_price,
-        "target_price": target_price,
-        "upside_pct": upside_pct,
-        "recommendation": recommendation,
-        "recommendation_mean": recommendation_mean,
-    }
-
-
-def fetch_yahoo_finance_headlines(symbol: str, limit: int = NEWS_HEADLINE_LIMIT) -> List[Dict[str, str]]:
-    feed_url = f"https://feeds.finance.yahoo.com/rss/2.0/headline?s={quote(symbol)}&region=US&lang=en-US"
-    parsed = feedparser.parse(feed_url)
-    headlines = []
-    for entry in parsed.entries[:limit]:
-        headlines.append({
-            "title": entry.get("title", ""),
-            "published": entry.get("published", ""),
-            "link": entry.get("link", ""),
-        })
-    return headlines
 
 
 def get_ticker_currency(ticker: Any) -> str:
@@ -245,9 +130,6 @@ def compute_metrics(company: Company) -> Dict[str, Any]:
     income = ticker.financials
     balance_sheet = ticker.balance_sheet
     cash_flow = ticker.cashflow
-    quarterly_financials_trend = get_quarterly_financials_trend(ticker)
-    analyst_targets = get_analyst_targets(ticker)
-    news_headlines = fetch_yahoo_finance_headlines(symbol)
 
     if income.empty:
         raise ValueError(f"No yfinance financials found for {symbol}")
@@ -308,10 +190,6 @@ def compute_metrics(company: Company) -> Dict[str, Any]:
         "fiscal_date": format_statement_date(latest_column) if latest_column is not None else None,
         "revenue_growth_yoy_pct": revenue_growth_yoy,
         "gross_margin_trend_3y": gross_margin_trend,
-        "quarterly_financials_trend": quarterly_financials_trend,
-        "analyst_targets": analyst_targets,
-        "news_headlines": news_headlines,
-        "news_sentiment_summary": None,
         "free_cash_flow": free_cash_flow,
         "free_cash_flow_currency": "USD" if free_cash_flow is not None else None,
         "free_cash_flow_source": free_cash_flow_source,
@@ -346,9 +224,7 @@ Financial metrics:
 
 
 def analyze_with_openai(company_metrics: List[Dict[str, Any]]) -> str:
-   
-
-    client = OpenAI(api_key=st.secrets.get("OPENAI_API_KEY", os.getenv("OPENAI_API_KEY")))
+    client = get_openai_client()
     response = client.chat.completions.create(
         model=OPENAI_MODEL,
         messages=[
@@ -358,56 +234,6 @@ def analyze_with_openai(company_metrics: List[Dict[str, Any]]) -> str:
         temperature=0.2,
     )
     return response.choices[0].message.content
-
-
-def summarize_news_sentiment(symbol: str, headlines: List[Dict[str, str]], client: OpenAI) -> str:
-    if not headlines:
-        return "Neutral: no recent Yahoo Finance RSS headlines were available."
-
-    headline_text = "\n".join(
-        f"{index + 1}. {item.get('title', '')}"
-        for index, item in enumerate(headlines[:NEWS_HEADLINE_LIMIT])
-        if item.get("title")
-    )
-    if not headline_text:
-        return "Neutral: recent Yahoo Finance RSS items did not include usable headlines."
-
-    response = client.chat.completions.create(
-        model=OPENAI_MODEL,
-        messages=[
-            {
-                "role": "system",
-                "content": (
-                    "You are a concise financial news sentiment classifier. "
-                    "Return exactly one sentence starting with Positive:, Negative:, or Neutral:."
-                ),
-            },
-            {
-                "role": "user",
-                "content": f"Classify the sentiment for {symbol} from these Yahoo Finance headlines:\n{headline_text}",
-            },
-        ],
-        temperature=0.1,
-    )
-    return response.choices[0].message.content.strip()
-
-
-def add_news_sentiment(company_metrics: List[Dict[str, Any]]) -> None:
-    if not OPENAI_API_KEY:
-        raise ValueError("Missing OPENAI_API_KEY in config.py/.env")
-
-    client = OpenAI(api_key=st.secrets.get("OPENAI_API_KEY", os.getenv("OPENAI_API_KEY")))
-    for item in company_metrics:
-        if item.get("error"):
-            continue
-        try:
-            item["news_sentiment_summary"] = summarize_news_sentiment(
-                item["symbol_used"],
-                item.get("news_headlines") or [],
-                client,
-            )
-        except Exception as exc:
-            item["news_sentiment_summary"] = f"News sentiment unavailable: {exc}"
 
 
 def format_metric(value: Optional[float], suffix: str = "") -> str:
@@ -420,20 +246,6 @@ def format_fx_rate(value: Optional[float]) -> str:
     if value is None:
         return "N/A"
     return f"{value:,.6f}"
-
-
-def format_large_number(value: Optional[float], currency: str = "") -> str:
-    if value is None:
-        return "N/A"
-    prefix = f"{currency} " if currency else ""
-    abs_value = abs(value)
-    if abs_value >= 1e12:
-        return f"{prefix}{value / 1e12:,.2f}T"
-    if abs_value >= 1e9:
-        return f"{prefix}{value / 1e9:,.2f}B"
-    if abs_value >= 1e6:
-        return f"{prefix}{value / 1e6:,.2f}M"
-    return f"{prefix}{value:,.2f}"
 
 
 def print_metrics(company_metrics: List[Dict[str, Any]]) -> None:
@@ -461,29 +273,6 @@ def print_metrics(company_metrics: List[Dict[str, Any]]) -> None:
         print("Gross margin trend:")
         for margin in item["gross_margin_trend_3y"]:
             print(f"  {margin.get('date') or 'N/A'}: {format_metric(margin.get('gross_margin_pct'), '%')}")
-        print("Quarterly revenue and gross margin trend:")
-        for quarter in item.get("quarterly_financials_trend", []):
-            print(
-                f"  {quarter.get('date') or 'N/A'}: "
-                f"Revenue {format_large_number(quarter.get('revenue'), item.get('financial_currency') or '')}, "
-                f"Gross margin {format_metric(quarter.get('gross_margin_pct'), '%')}"
-            )
-        analyst_targets = item.get("analyst_targets") or {}
-        print(
-            "Analyst targets: "
-            f"Current {format_metric(analyst_targets.get('current_price'))}, "
-            f"Target {format_metric(analyst_targets.get('target_price'))}, "
-            f"Upside {format_metric(analyst_targets.get('upside_pct'), '%')}, "
-            f"Recommendation {analyst_targets.get('recommendation') or 'N/A'}"
-        )
-        if analyst_targets.get("recommendation_mean") is not None:
-            print(f"Analyst recommendation mean: {format_metric(analyst_targets.get('recommendation_mean'))}")
-        print(f"News sentiment: {item.get('news_sentiment_summary') or 'N/A'}")
-        headlines = item.get("news_headlines") or []
-        if headlines:
-            print("Latest Yahoo Finance headlines:")
-            for headline in headlines[:3]:
-                print(f"  - {headline.get('title') or 'N/A'}")
     print(f"\n{DATA_SOURCE_DISCLAIMER}")
 
 
@@ -503,12 +292,6 @@ def run_analyzer(skip_ai: bool = False, output_json: bool = False) -> Dict[str, 
                 "error": str(exc),
             })
 
-    if skip_ai:
-        for item in company_metrics:
-            if not item.get("error"):
-                item["news_sentiment_summary"] = "Skipped because --skip-ai was used."
-    else:
-        add_news_sentiment(company_metrics)
     analysis = None if skip_ai else analyze_with_openai(company_metrics)
     result = {"metrics": company_metrics, "analysis": analysis, "data_source_disclaimer": DATA_SOURCE_DISCLAIMER}
 

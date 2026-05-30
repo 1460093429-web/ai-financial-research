@@ -1,8 +1,11 @@
 import chromadb
 from datetime import datetime
+from config import DATA_DIR
 
 # Initialize ChromaDB
-client = chromadb.PersistentClient(path="./memory_db")
+MEMORY_DB_DIR = DATA_DIR / "memory_db"
+MEMORY_DB_DIR.mkdir(exist_ok=True)
+client = chromadb.PersistentClient(path=str(MEMORY_DB_DIR))
 collection = client.get_or_create_collection("financial_reports")
 
 def save_report(company, data, analysis):
@@ -38,10 +41,9 @@ def get_history(company, n_results=3):
 
 def analyze_with_memory(financial_data, analyze_fn):
     """Run analysis with historical context."""
-    from openai import OpenAI
-    from config import OPENAI_API_KEY
+    from config import get_openai_client
     
-    client_ai = OpenAI(api_key=OPENAI_API_KEY)
+    client_ai = get_openai_client()
     
     for company, data in financial_data.items():
         # Get history

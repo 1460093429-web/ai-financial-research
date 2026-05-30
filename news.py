@@ -11,12 +11,6 @@ rss_feeds = {
     "Micron":
     "https://feeds.finance.yahoo.com/rss/2.0/headline?s=MU&region=US&lang=en-US",
 
-    "Samsung":
-    "https://feeds.finance.yahoo.com/rss/2.0/headline?s=005930.KS&region=US&lang=en-US",
-
-    "SK Hynix":
-    "https://feeds.finance.yahoo.com/rss/2.0/headline?s=000660.KS&region=US&lang=en-US",
-
     "SanDisk":
     "https://feeds.finance.yahoo.com/rss/2.0/headline?s=SNDK&region=US&lang=en-US"
 

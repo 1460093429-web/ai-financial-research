@@ -3,8 +3,7 @@ import json
 import matplotlib.pyplot as plt
 import yfinance as yf
 
-from openai import OpenAI
-from config import OPENAI_API_KEY
+from config import get_openai_client
 
 from reportlab.platypus import (
     SimpleDocTemplate,
@@ -19,11 +18,7 @@ from reportlab.lib.styles import getSampleStyleSheet
 # OPENAI CLIENT
 # =========================
 
-if not OPENAI_API_KEY:
-
-    raise ValueError("OPENAI_API_KEY is not set. Please configure it in .env.")
-
-client = OpenAI(api_key=OPENAI_API_KEY)
+client = get_openai_client()
 
 # =========================
 # RSS FEEDS
@@ -39,12 +34,6 @@ rss_feeds = {
 
     "Micron":
     "https://feeds.finance.yahoo.com/rss/2.0/headline?s=MU&region=US&lang=en-US",
-
-    "Samsung":
-    "https://feeds.finance.yahoo.com/rss/2.0/headline?s=005930.KS&region=US&lang=en-US",
-
-    "SK Hynix":
-    "https://feeds.finance.yahoo.com/rss/2.0/headline?s=000660.KS&region=US&lang=en-US",
 
     "SanDisk":
     "https://feeds.finance.yahoo.com/rss/2.0/headline?s=SNDK&region=US&lang=en-US",
@@ -181,8 +170,6 @@ tickers = {
     "NVIDIA": "NVDA",
     "AMD": "AMD",
     "Micron": "MU",
-    "Samsung": "005930.KS",
-    "SK Hynix": "000660.KS",
     "SanDisk": "SNDK"
 
 }
