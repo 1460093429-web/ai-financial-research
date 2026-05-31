@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 
 from datetime import date, datetime, timedelta
+import hashlib
 import json
 import os
 import re
@@ -504,6 +505,160 @@ def news_sentiment_label(sentiment):
     return t(sentiment.lower()) if sentiment in ("Positive", "Neutral", "Negative") else sentiment
 
 
+NEWS_SUMMARY_LABELS = {
+    "English": "AI Summary",
+    "\u4e2d\u6587": "AI \u603b\u7ed3",
+    "Espa\u00f1ol": "Resumen de IA",
+}
+NEWS_SUMMARY_LANGUAGE_NAMES = {
+    "English": "English",
+    "\u4e2d\u6587": "Chinese",
+    "Espa\u00f1ol": "Spanish",
+}
+NEWS_SUMMARY_FIELD_LABELS = {
+    "English": ("Main point", "Stock impact", "Key risk or uncertainty", "Main driver", "Confidence"),
+    "\u4e2d\u6587": ("\u4e3b\u8981\u4fe1\u606f", "\u80a1\u7968\u5f71\u54cd", "\u5173\u952e\u98ce\u9669\u6216\u4e0d\u786e\u5b9a\u6027", "\u4e3b\u8981\u9a71\u52a8\u56e0\u7d20", "\u7f6e\u4fe1\u5ea6"),
+    "Espa\u00f1ol": ("Punto principal", "Impacto burs\u00e1til", "Riesgo o incertidumbre clave", "Factor principal", "Confianza"),
+}
+NEWS_SUMMARY_UI = {
+    "English": ("Generate summary", "Generate this summary on demand to limit AI calls."),
+    "\u4e2d\u6587": ("\u751f\u6210\u603b\u7ed3", "\u6309\u9700\u751f\u6210\u6b64\u603b\u7ed3\uff0c\u4ee5\u51cf\u5c11 AI \u8c03\u7528\u3002"),
+    "Espa\u00f1ol": ("Generar resumen", "Genere este resumen bajo demanda para limitar las llamadas de IA."),
+}
+NEWS_DRIVER_KEYWORDS = (
+    ("earnings", ("earnings", "revenue", "profit", "eps", "guidance", "margin")),
+    ("demand", ("demand", "sales", "orders", "bookings")),
+    ("valuation", ("valuation", "price target", "overvalued", "undervalued")),
+    ("macro", ("inflation", "interest rate", "fed", "economy", "macro")),
+    ("regulation", ("regulation", "regulatory", "lawsuit", "export restriction", "antitrust")),
+    ("product", ("product", "launch", "chip", "platform")),
+    ("analyst rating", ("upgrade", "downgrade", "analyst", "rating")),
+    ("supply chain", ("supply chain", "inventory", "supplier", "shipment")),
+)
+
+
+def _news_summary_language(language):
+    return language if language in NEWS_SUMMARY_LABELS else "English"
+
+
+def _rule_based_news_summary(title, text, sentiment, language):
+    language = _news_summary_language(language)
+    article_text = f"{title or ''} {text or ''}".lower()
+    driver = next(
+        (name for name, keywords in NEWS_DRIVER_KEYWORDS if any(keyword in article_text for keyword in keywords)),
+        "other",
+    )
+    impact = {"Positive": "Bullish", "Negative": "Bearish"}.get(sentiment, "Neutral")
+    confidence = "Medium" if text else "Low"
+    if language == "\u4e2d\u6587":
+        impact = {"Bullish": "\u770b\u6da8", "Bearish": "\u770b\u8dcc", "Neutral": "\u4e2d\u6027"}[impact]
+        reasons = {
+            "Positive": "\u6807\u9898\u548c\u53ef\u7528\u6458\u8981\u5305\u542b\u6b63\u9762\u4fe1\u53f7\u3002",
+            "Negative": "\u6807\u9898\u548c\u53ef\u7528\u6458\u8981\u5305\u542b\u8d1f\u9762\u4fe1\u53f7\u3002",
+            "Neutral": "\u73b0\u6709\u4fe1\u606f\u6ca1\u6709\u663e\u793a\u660e\u786e\u7684\u65b9\u5411\u6027\u5f71\u54cd\u3002",
+        }
+        risk = "\u4ec5\u4f9d\u636e\u6807\u9898\u548c\u6570\u636e\u6e90\u63d0\u4f9b\u7684\u6458\u8981\uff0c\u7f3a\u5c11\u66f4\u591a\u80cc\u666f\u3002"
+        confidence = {"Medium": "\u4e2d", "Low": "\u4f4e"}[confidence]
+    elif language == "Espa\u00f1ol":
+        impact = {"Bullish": "Alcista", "Bearish": "Bajista", "Neutral": "Neutral"}[impact]
+        reasons = {
+            "Positive": "El titular y el resumen disponible contienen se\u00f1ales positivas.",
+            "Negative": "El titular y el resumen disponible contienen se\u00f1ales negativas.",
+            "Neutral": "La informaci\u00f3n disponible no muestra un efecto direccional claro.",
+        }
+        risk = "El an\u00e1lisis solo usa el titular y el resumen proporcionado por la fuente, con contexto limitado."
+        confidence = {"Medium": "Media", "Low": "Baja"}[confidence]
+    else:
+        reasons = {
+            "Positive": "The headline and available summary contain positive signals.",
+            "Negative": "The headline and available summary contain negative signals.",
+            "Neutral": "The available information does not show a clear directional effect.",
+        }
+        risk = "The analysis only uses the headline and source-provided summary, so context is limited."
+    return {
+        "main_point": title or "No article title was provided.",
+        "stock_impact": f"{impact}: {reasons.get(sentiment, reasons['Neutral'])}",
+        "risk": risk,
+        "driver": driver,
+        "confidence": confidence,
+    }
+
+
+@st.cache_data(ttl=12 * 60 * 60)
+def get_cached_ai_news_summary(title, ticker, source, published_date, sentiment, language, _article_text=""):
+    fallback = _rule_based_news_summary(title, _article_text, sentiment, language)
+    try:
+        client = get_openai_client()
+    except Exception:
+        return fallback, None
+    language = _news_summary_language(language)
+    prompt = (
+        "Create a short investment-focused article summary using only the supplied news metadata. "
+        "Do not fetch or infer content from the article URL. Preserve company names, tickers, source names, "
+        f"and other proper nouns exactly as supplied. Write the values in {NEWS_SUMMARY_LANGUAGE_NAMES[language]}. "
+        "Return JSON only with keys main_point, stock_impact, risk, driver, confidence. "
+        "main_point must be one sentence. stock_impact must start with Bullish, Neutral, or Bearish and include one short reason. "
+        "driver must be one of earnings, demand, valuation, macro, regulation, product, analyst rating, supply chain, or other. "
+        "confidence must be Low, Medium, or High.\n\n"
+        f"Title: {title or ''}\nTicker: {ticker or ''}\nSource: {source or ''}\n"
+        f"Published date: {published_date or ''}\nExisting sentiment: {sentiment or ''}\n"
+        f"Source-provided summary/text: {_article_text or ''}"
+    )
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"},
+        )
+        summary = json.loads(response.choices[0].message.content)
+        required_fields = ("main_point", "stock_impact", "risk", "driver", "confidence")
+        if not all(summary.get(field) for field in required_fields):
+            raise ValueError("AI summary response omitted required fields")
+        return {field: str(summary[field]) for field in required_fields}, None
+    except Exception as exc:
+        return fallback, f"AI summary unavailable; showing rule-based fallback: {exc}"
+
+
+def render_ai_news_summary(item):
+    language = _news_summary_language(st.session_state.get("language", "English"))
+    with st.expander(NEWS_SUMMARY_LABELS[language], expanded=False):
+        try:
+            summary_key = hashlib.sha256(json.dumps(
+                [
+                    item.get("title") or "",
+                    item.get("ticker") or "",
+                    item.get("source") or "",
+                    item.get("published_date") or "",
+                    item.get("sentiment") or "",
+                    language,
+                ],
+                ensure_ascii=True,
+            ).encode("utf-8")).hexdigest()
+            requested_key = f"news_summary_requested_{summary_key}"
+            button_label, idle_caption = NEWS_SUMMARY_UI[language]
+            if st.button(button_label, key=f"generate_news_summary_{summary_key}"):
+                st.session_state[requested_key] = True
+            if not st.session_state.get(requested_key):
+                st.caption(idle_caption)
+                return
+            summary, warning = get_cached_ai_news_summary(
+                item.get("title") or "",
+                item.get("ticker") or "",
+                item.get("source") or "",
+                item.get("published_date") or "",
+                item.get("sentiment") or "",
+                language,
+                item.get("text") or "",
+            )
+            if warning:
+                st.warning(warning)
+            labels = NEWS_SUMMARY_FIELD_LABELS[language]
+            for label, field in zip(labels, ("main_point", "stock_impact", "risk", "driver", "confidence")):
+                st.markdown(f"**{label}:** {summary[field]}")
+        except Exception as exc:
+            st.warning(f"AI summary unavailable: {exc}")
+
+
 def render_news_item(item):
     title = item.get("title") or t("untitled_article")
     url = item.get("url")
@@ -516,6 +671,7 @@ def render_news_item(item):
     )
     if item.get("text"):
         st.write(item["text"])
+    render_ai_news_summary(item)
     if url:
         st.link_button(t("open_article"), url)
     st.divider()
