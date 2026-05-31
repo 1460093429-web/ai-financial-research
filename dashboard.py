@@ -510,20 +510,36 @@ NEWS_SUMMARY_LABELS = {
     "\u4e2d\u6587": "AI \u603b\u7ed3",
     "Espa\u00f1ol": "Resumen de IA",
 }
+AI_SUMMARY_VERSION = "v2"
 NEWS_SUMMARY_LANGUAGE_NAMES = {
     "English": "English",
     "\u4e2d\u6587": "Chinese",
     "Espa\u00f1ol": "Spanish",
 }
 NEWS_SUMMARY_FIELD_LABELS = {
-    "English": ("Main point", "Stock impact", "Key risk or uncertainty", "Main driver", "Confidence"),
-    "\u4e2d\u6587": ("\u4e3b\u8981\u4fe1\u606f", "\u80a1\u7968\u5f71\u54cd", "\u5173\u952e\u98ce\u9669\u6216\u4e0d\u786e\u5b9a\u6027", "\u4e3b\u8981\u9a71\u52a8\u56e0\u7d20", "\u7f6e\u4fe1\u5ea6"),
-    "Espa\u00f1ol": ("Punto principal", "Impacto burs\u00e1til", "Riesgo o incertidumbre clave", "Factor principal", "Confianza"),
+    "English": {
+        "news_overview": "News Overview", "why_it_matters": "Why It Matters",
+        "potential_stock_impact": "Potential Stock Impact", "positive_factors": "Positive Factors",
+        "risk_factors": "Risk Factors", "what_to_watch_next": "What to Watch Next",
+        "ai_view": "AI View", "confidence": "Confidence",
+    },
+    "\u4e2d\u6587": {
+        "news_overview": "\u65b0\u95fb\u6982\u8ff0", "why_it_matters": "\u4e3a\u4f55\u91cd\u8981",
+        "potential_stock_impact": "\u6f5c\u5728\u80a1\u4ef7\u5f71\u54cd", "positive_factors": "\u79ef\u6781\u56e0\u7d20",
+        "risk_factors": "\u98ce\u9669\u56e0\u7d20", "what_to_watch_next": "\u540e\u7eed\u5173\u6ce8",
+        "ai_view": "AI \u89c2\u70b9", "confidence": "\u7f6e\u4fe1\u5ea6",
+    },
+    "Espa\u00f1ol": {
+        "news_overview": "Resumen de la noticia", "why_it_matters": "Por qu\u00e9 importa",
+        "potential_stock_impact": "Impacto potencial en la acci\u00f3n", "positive_factors": "Factores positivos",
+        "risk_factors": "Factores de riesgo", "what_to_watch_next": "Qu\u00e9 vigilar",
+        "ai_view": "Visi\u00f3n de IA", "confidence": "Confianza",
+    },
 }
 NEWS_SUMMARY_UI = {
-    "English": ("Generate summary", "Generate this summary on demand to limit AI calls."),
-    "\u4e2d\u6587": ("\u751f\u6210\u603b\u7ed3", "\u6309\u9700\u751f\u6210\u6b64\u603b\u7ed3\uff0c\u4ee5\u51cf\u5c11 AI \u8c03\u7528\u3002"),
-    "Espa\u00f1ol": ("Generar resumen", "Genere este resumen bajo demanda para limitar las llamadas de IA."),
+    "English": ("Generate summary", "Regenerate summary", "Generate this summary on demand to limit AI calls."),
+    "\u4e2d\u6587": ("\u751f\u6210\u603b\u7ed3", "\u91cd\u65b0\u751f\u6210\u603b\u7ed3", "\u6309\u9700\u751f\u6210\u6b64\u603b\u7ed3\uff0c\u4ee5\u51cf\u5c11 AI \u8c03\u7528\u3002"),
+    "Espa\u00f1ol": ("Generar resumen", "Regenerar resumen", "Genere este resumen bajo demanda para limitar las llamadas de IA."),
 }
 NEWS_DRIVER_KEYWORDS = (
     ("earnings", ("earnings", "revenue", "profit", "eps", "guidance", "margin")),
@@ -541,68 +557,91 @@ def _news_summary_language(language):
     return language if language in NEWS_SUMMARY_LABELS else "English"
 
 
-def _rule_based_news_summary(title, text, sentiment, language):
+def _rule_based_news_summary(title, text, ticker, sentiment, language):
     language = _news_summary_language(language)
     article_text = f"{title or ''} {text or ''}".lower()
     driver = next(
         (name for name, keywords in NEWS_DRIVER_KEYWORDS if any(keyword in article_text for keyword in keywords)),
         "other",
     )
-    impact = {"Positive": "Bullish", "Negative": "Bearish"}.get(sentiment, "Neutral")
+    canonical_impact = {"Positive": "Bullish", "Negative": "Bearish"}.get(sentiment, "Neutral")
     confidence = "Medium" if text else "Low"
+    title = title or "No article title was provided."
+    ticker = ticker or "the related stock"
     if language == "\u4e2d\u6587":
-        impact = {"Bullish": "\u770b\u6da8", "Bearish": "\u770b\u8dcc", "Neutral": "\u4e2d\u6027"}[impact]
-        reasons = {
-            "Positive": "\u6807\u9898\u548c\u53ef\u7528\u6458\u8981\u5305\u542b\u6b63\u9762\u4fe1\u53f7\u3002",
-            "Negative": "\u6807\u9898\u548c\u53ef\u7528\u6458\u8981\u5305\u542b\u8d1f\u9762\u4fe1\u53f7\u3002",
-            "Neutral": "\u73b0\u6709\u4fe1\u606f\u6ca1\u6709\u663e\u793a\u660e\u786e\u7684\u65b9\u5411\u6027\u5f71\u54cd\u3002",
-        }
-        risk = "\u4ec5\u4f9d\u636e\u6807\u9898\u548c\u6570\u636e\u6e90\u63d0\u4f9b\u7684\u6458\u8981\uff0c\u7f3a\u5c11\u66f4\u591a\u80cc\u666f\u3002"
+        impact = {"Bullish": "\u770b\u6da8", "Bearish": "\u770b\u8dcc", "Neutral": "\u4e2d\u6027"}[canonical_impact]
+        reason = {
+            "Positive": "\u73b0\u6709\u4fe1\u606f\u5305\u542b\u6b63\u9762\u4fe1\u53f7\uff0c\u53ef\u80fd\u6539\u5584\u5e02\u573a\u9884\u671f\u3002",
+            "Negative": "\u73b0\u6709\u4fe1\u606f\u5305\u542b\u8d1f\u9762\u4fe1\u53f7\uff0c\u53ef\u80fd\u538b\u4f4e\u5e02\u573a\u9884\u671f\u3002",
+            "Neutral": "\u73b0\u6709\u4fe1\u606f\u5c1a\u4e0d\u8db3\u4ee5\u5f62\u6210\u660e\u786e\u65b9\u5411\u3002",
+        }.get(sentiment, "\u73b0\u6709\u4fe1\u606f\u5c1a\u4e0d\u8db3\u4ee5\u5f62\u6210\u660e\u786e\u65b9\u5411\u3002")
         confidence = {"Medium": "\u4e2d", "Low": "\u4f4e"}[confidence]
+        return {
+            "news_overview": f"\u6587\u7ae0\u300a{title}\u300b\u805a\u7126 {ticker} \u76f8\u5173\u52a8\u6001\u3002\u672c\u6458\u8981\u4ec5\u4f9d\u636e\u6807\u9898\u548c\u6570\u636e\u6e90\u63d0\u4f9b\u7684\u6587\u672c\uff0c\u6838\u5fc3\u9a71\u52a8\u56e0\u7d20\u4e3a {driver}\u3002",
+            "why_it_matters": f"\u6295\u8d44\u8005\u9700\u8bc4\u4f30\u8be5\u4e8b\u4ef6\u662f\u5426\u4f1a\u5f71\u54cd {ticker} \u7684\u9700\u6c42\u3001\u76c8\u5229\u7387\u3001\u6307\u5f15\u6216\u4f30\u503c\u3002",
+            "potential_stock_impact": f"{impact}\uff1a{reason}",
+            "positive_factors": ["\u53ef\u80fd\u6539\u5584\u6295\u8d44\u8005\u5bf9\u4e1a\u52a1\u52a8\u80fd\u7684\u9884\u671f\u3002", "\u82e5\u540e\u7eed\u6570\u636e\u8bc1\u5b9e\uff0c\u53ef\u80fd\u652f\u6301\u66f4\u9ad8\u4f30\u503c\u3002"],
+            "risk_factors": ["\u4ec5\u4f9d\u636e\u6807\u9898\u548c\u6765\u6e90\u6458\u8981\uff0c\u80cc\u666f\u6709\u9650\u3002", "\u5e02\u573a\u53ef\u80fd\u5df2\u7ecf\u63d0\u524d\u53cd\u6620\u76f8\u5173\u9884\u671f\u3002"],
+            "what_to_watch_next": ["\u7ba1\u7406\u5c42\u6307\u5f15\u4e0e\u4e0b\u6b21\u8d22\u62a5\u3002", "\u9700\u6c42\u3001\u5229\u6da6\u7387\u4e0e\u5206\u6790\u5e08\u9884\u6d4b\u8c03\u6574\u3002"],
+            "ai_view": impact, "confidence": confidence,
+        }
     elif language == "Espa\u00f1ol":
-        impact = {"Bullish": "Alcista", "Bearish": "Bajista", "Neutral": "Neutral"}[impact]
-        reasons = {
-            "Positive": "El titular y el resumen disponible contienen se\u00f1ales positivas.",
-            "Negative": "El titular y el resumen disponible contienen se\u00f1ales negativas.",
-            "Neutral": "La informaci\u00f3n disponible no muestra un efecto direccional claro.",
-        }
-        risk = "El an\u00e1lisis solo usa el titular y el resumen proporcionado por la fuente, con contexto limitado."
+        impact = {"Bullish": "Alcista", "Bearish": "Bajista", "Neutral": "Neutral"}[canonical_impact]
+        reason = {
+            "Positive": "La informaci\u00f3n disponible contiene se\u00f1ales positivas que podr\u00edan mejorar las expectativas.",
+            "Negative": "La informaci\u00f3n disponible contiene se\u00f1ales negativas que podr\u00edan reducir las expectativas.",
+            "Neutral": "La informaci\u00f3n disponible no establece una direcci\u00f3n clara.",
+        }.get(sentiment, "La informaci\u00f3n disponible no establece una direcci\u00f3n clara.")
         confidence = {"Medium": "Media", "Low": "Baja"}[confidence]
-    else:
-        reasons = {
-            "Positive": "The headline and available summary contain positive signals.",
-            "Negative": "The headline and available summary contain negative signals.",
-            "Neutral": "The available information does not show a clear directional effect.",
+        return {
+            "news_overview": f"El art\u00edculo '{title}' trata un desarrollo relacionado con {ticker}. Este resumen usa solo el titular y el texto aportado por la fuente; el principal factor identificado es {driver}.",
+            "why_it_matters": f"Los inversores deben valorar si el desarrollo afecta la demanda, los m\u00e1rgenes, las previsiones o la valoraci\u00f3n de {ticker}.",
+            "potential_stock_impact": f"{impact}: {reason}",
+            "positive_factors": ["Podr\u00eda reforzar las expectativas sobre el impulso del negocio.", "Una confirmaci\u00f3n posterior podr\u00eda respaldar una valoraci\u00f3n mayor."],
+            "risk_factors": ["El contexto est\u00e1 limitado al titular y al resumen de la fuente.", "El mercado puede haber descontado ya parte de las expectativas."],
+            "what_to_watch_next": ["Pr\u00f3ximos resultados y previsiones de la direcci\u00f3n.", "Tendencias de demanda, m\u00e1rgenes y revisiones de analistas."],
+            "ai_view": impact, "confidence": confidence,
         }
-        risk = "The analysis only uses the headline and source-provided summary, so context is limited."
+    reason = {
+        "Positive": "The available information contains positive signals that could improve investor expectations.",
+        "Negative": "The available information contains negative signals that could reduce investor expectations.",
+        "Neutral": "The available information does not establish a clear directional effect.",
+    }.get(sentiment, "The available information does not establish a clear directional effect.")
     return {
-        "main_point": title or "No article title was provided.",
-        "stock_impact": f"{impact}: {reasons.get(sentiment, reasons['Neutral'])}",
-        "risk": risk,
-        "driver": driver,
+        "news_overview": f"The article '{title}' covers a development related to {ticker}. This summary uses only the headline and source-provided text; the main identified driver is {driver}.",
+        "why_it_matters": f"Investors should assess whether the development changes demand, margins, guidance, or valuation expectations for {ticker}.",
+        "potential_stock_impact": f"{canonical_impact}: {reason}",
+        "positive_factors": ["The development could improve expectations for business momentum.", "Follow-through evidence could support a stronger valuation case."],
+        "risk_factors": ["Context is limited to the headline and source-provided summary.", "The market may already have priced in some of the expected effect."],
+        "what_to_watch_next": ["Upcoming earnings and management guidance.", "Demand trends, margins, and analyst estimate revisions."],
+        "ai_view": canonical_impact,
         "confidence": confidence,
     }
 
 
 @st.cache_data(ttl=12 * 60 * 60)
-def get_cached_ai_news_summary(title, ticker, source, published_date, sentiment, language, _article_text=""):
-    fallback = _rule_based_news_summary(title, _article_text, sentiment, language)
+def get_cached_ai_news_summary(title, ticker, source, published_date, sentiment, language, summary_version, article_text="", refresh_nonce=0):
+    fallback = _rule_based_news_summary(title, article_text, ticker, sentiment, language)
     try:
         client = get_openai_client()
     except Exception:
         return fallback, None
     language = _news_summary_language(language)
     prompt = (
-        "Create a short investment-focused article summary using only the supplied news metadata. "
+        "Create a concise but detailed investment-focused article summary using only the supplied news metadata. "
         "Do not fetch or infer content from the article URL. Preserve company names, tickers, source names, "
         f"and other proper nouns exactly as supplied. Write the values in {NEWS_SUMMARY_LANGUAGE_NAMES[language]}. "
-        "Return JSON only with keys main_point, stock_impact, risk, driver, confidence. "
-        "main_point must be one sentence. stock_impact must start with Bullish, Neutral, or Bearish and include one short reason. "
-        "driver must be one of earnings, demand, valuation, macro, regulation, product, analyst rating, supply chain, or other. "
-        "confidence must be Low, Medium, or High.\n\n"
+        "Return JSON only with keys news_overview, why_it_matters, potential_stock_impact, positive_factors, "
+        "risk_factors, what_to_watch_next, ai_view, confidence. news_overview must be 2-3 sentences. "
+        "positive_factors, risk_factors, and what_to_watch_next must each be arrays with 2-3 concise items. "
+        "potential_stock_impact must state whether the article is Bullish, Neutral, or Bearish for the related stock and explain why. "
+        "ai_view must be Bullish, Neutral, or Bearish. confidence must be Low, Medium, or High. "
+        "Keep the full response around 120-180 English words, 180-260 Chinese characters, or 130-190 Spanish words. "
+        "Translate the section values naturally for the requested language, including the view and confidence labels, "
+        "but do not translate the supplied article title, company name, ticker, source, or URL.\n\n"
         f"Title: {title or ''}\nTicker: {ticker or ''}\nSource: {source or ''}\n"
         f"Published date: {published_date or ''}\nExisting sentiment: {sentiment or ''}\n"
-        f"Source-provided summary/text: {_article_text or ''}"
+        f"Source-provided summary/text: {article_text or ''}"
     )
     try:
         response = client.chat.completions.create(
@@ -611,10 +650,16 @@ def get_cached_ai_news_summary(title, ticker, source, published_date, sentiment,
             response_format={"type": "json_object"},
         )
         summary = json.loads(response.choices[0].message.content)
-        required_fields = ("main_point", "stock_impact", "risk", "driver", "confidence")
+        required_fields = (
+            "news_overview", "why_it_matters", "potential_stock_impact", "positive_factors",
+            "risk_factors", "what_to_watch_next", "ai_view", "confidence",
+        )
         if not all(summary.get(field) for field in required_fields):
             raise ValueError("AI summary response omitted required fields")
-        return {field: str(summary[field]) for field in required_fields}, None
+        for field in ("positive_factors", "risk_factors", "what_to_watch_next"):
+            if not isinstance(summary[field], list) or not 2 <= len(summary[field]) <= 3:
+                raise ValueError(f"AI summary field {field} must contain 2-3 items")
+        return {field: summary[field] if isinstance(summary[field], list) else str(summary[field]) for field in required_fields}, None
     except Exception as exc:
         return fallback, f"AI summary unavailable; showing rule-based fallback: {exc}"
 
@@ -631,11 +676,13 @@ def render_ai_news_summary(item):
                     item.get("published_date") or "",
                     item.get("sentiment") or "",
                     language,
+                    AI_SUMMARY_VERSION,
+                    item.get("text") or "",
                 ],
                 ensure_ascii=True,
             ).encode("utf-8")).hexdigest()
             requested_key = f"news_summary_requested_{summary_key}"
-            button_label, idle_caption = NEWS_SUMMARY_UI[language]
+            button_label, refresh_label, idle_caption = NEWS_SUMMARY_UI[language]
             if st.button(button_label, key=f"generate_news_summary_{summary_key}"):
                 st.session_state[requested_key] = True
             if not st.session_state.get(requested_key):
@@ -648,13 +695,25 @@ def render_ai_news_summary(item):
                 item.get("published_date") or "",
                 item.get("sentiment") or "",
                 language,
+                AI_SUMMARY_VERSION,
                 item.get("text") or "",
+                st.session_state.get(f"news_summary_refresh_{summary_key}", 0),
             )
             if warning:
                 st.warning(warning)
             labels = NEWS_SUMMARY_FIELD_LABELS[language]
-            for label, field in zip(labels, ("main_point", "stock_impact", "risk", "driver", "confidence")):
-                st.markdown(f"**{label}:** {summary[field]}")
+            for field in ("news_overview", "why_it_matters", "potential_stock_impact"):
+                st.markdown(f"**{labels[field]}:** {summary[field]}")
+            for field in ("positive_factors", "risk_factors", "what_to_watch_next"):
+                st.markdown(f"**{labels[field]}:**")
+                for value in summary[field]:
+                    st.markdown(f"- {value}")
+            for field in ("ai_view", "confidence"):
+                st.markdown(f"**{labels[field]}:** {summary[field]}")
+            if st.button(refresh_label, key=f"refresh_news_summary_{summary_key}"):
+                refresh_key = f"news_summary_refresh_{summary_key}"
+                st.session_state[refresh_key] = st.session_state.get(refresh_key, 0) + 1
+                st.rerun()
         except Exception as exc:
             st.warning(f"AI summary unavailable: {exc}")
 
