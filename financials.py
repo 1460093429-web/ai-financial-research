@@ -311,6 +311,7 @@ def fetch_historical_prices(ticker, start_date, end_date):
 
 
 def fetch_company_news(ticker, limit=5):
+    ticker = ticker.upper()
     try:
         api_key = get_fmp_api_key()
         data = _fmp_get("news/stock", api_key, symbols=ticker, limit=limit)
@@ -324,6 +325,7 @@ def fetch_company_news(ticker, limit=5):
                     "url": item.get("url"),
                     "publisher": item.get("publisher") or item.get("site"),
                     "source": "FMP",
+                    "ticker": ticker,
                 }
                 for item in data[:limit]
             ]
@@ -341,12 +343,33 @@ def fetch_company_news(ticker, limit=5):
                     "url": ((item.get("content") or {}).get("canonicalUrl") or {}).get("url") or item.get("link"),
                     "publisher": (item.get("content") or {}).get("provider", {}).get("displayName") or item.get("publisher"),
                     "source": "yfinance fallback",
+                    "ticker": ticker,
                 }
                 for item in news[:limit]
             ]
     except Exception as exc:
         logger.warning("%s: yfinance news lookup failed: %s", ticker, exc)
     return []
+
+
+def fetch_general_news(limit=100):
+    api_key = get_fmp_api_key()
+    data = _fmp_get("news/general-latest", api_key, page=0, limit=limit)
+    if not isinstance(data, list):
+        raise ValueError("news/general-latest returned no usable data")
+    return [
+        {
+            "title": item.get("title"),
+            "text": item.get("text"),
+            "published_date": item.get("publishedDate"),
+            "url": item.get("url"),
+            "publisher": item.get("publisher") or item.get("site"),
+            "source": "FMP",
+            "ticker": "Market",
+        }
+        for item in data[:limit]
+        if isinstance(item, dict)
+    ]
 
 
 def get_company_snapshot(ticker):
