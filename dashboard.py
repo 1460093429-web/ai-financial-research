@@ -1196,6 +1196,330 @@ def render_macro_section():
     return macro
 
 
+UBS_BASELINE = {
+    "FQ3_2026": {"revenue_b": 36.026, "gross_margin": 0.831, "operating_margin": 0.792, "eps": 20.96, "fcf_b": 11.861},
+    "FY2026": {"revenue_b": 116.596, "eps": 63.74, "fcf_b": 49.191},
+    "FY2027": {"revenue_b": 230.707, "eps": 142.23, "fcf_b": 121.128},
+    "FY2028": {"revenue_b": 274.110, "eps": 169.64, "fcf_b": 143.135},
+    "C2029": {"eps": 117.48, "base_pe": 15.0, "coe": 0.12, "discount_years": 1.0},
+}
+
+MU_TEXT = {
+    "English": {
+        "tab": "MU Valuation Model", "title": "MU Memory Re-rating Valuation Model",
+        "overview": "Model Overview", "intro": "This model compares Micron's latest reported earnings with UBS-style baseline forecasts, adjusts future EPS and FCF assumptions based on the surprise, applies a Nomura-style memory industry overlay, and calculates updated Bear/Base/Bull target prices.",
+        "disclaimer": "This is a personal research model, not investment advice.",
+        "baseline": "UBS Baseline Forecasts", "baseline_note": "Stored UBS-style assumptions are editable below. Enter updated assumptions manually after a forecast change.",
+        "quarterly": "Quarterly UBS-style baseline: MU FQ3 2026", "annual": "Annual UBS-style baseline", "valuation": "C2029E valuation assumptions",
+        "actual": "Actual Earnings Input", "actual_note": "Enter the latest MU results manually. Current price can use the dashboard quote when available.",
+        "use_quote": "Use automatically fetched MU share price when available", "price_warning": "Current MU price could not be fetched. Enter a manual price.",
+        "actual_revenue": "Actual Revenue, billion USD", "actual_gm": "Actual Gross Margin, %", "actual_om": "Actual Operating Margin, %",
+        "actual_eps": "Actual EPS", "actual_fcf": "Actual Free Cash Flow, billion USD", "actual_capex": "Actual Capex, billion USD",
+        "actual_cash": "Actual Cash, billion USD", "actual_debt": "Actual Debt, billion USD", "shares": "Actual Diluted Shares, billion", "share_price": "Current MU share price",
+        "surprise": "Surprise Analysis", "weighted": "Weighted Surprise Score", "overall": "Overall result", "metric": "Metric",
+        "forecast": "UBS Forecast", "actual_col": "Actual", "surprise_col": "Surprise", "interpretation": "Interpretation",
+        "revenue_surprise": "Revenue Surprise", "eps_surprise": "EPS Surprise", "fcf_surprise": "FCF Surprise",
+        "gm_surprise": "Gross Margin Surprise", "om_surprise": "Operating Margin Surprise",
+        "revision": "Forecast Revision", "advanced": "Advanced settings", "pass_through": "Surprise pass-through assumptions",
+        "forecast_item": "Forecast Item", "updated_estimate": "Updated Model Estimate", "change": "Change %",
+        "next_q": "Next quarter", "industry": "Nomura Industry Overlay", "industry_note": "This editable scoring panel uses a Nomura-style memory-cycle framework. It does not display or retrieve proprietary report text.",
+        "industry_score": "Industry Score", "target_pe": "Target P/E", "regime": "Industry regime", "score_help": "-2 = Very negative, -1 = Negative, 0 = Neutral, +1 = Positive, +2 = Very positive",
+        "output": "Target Price Output", "bear": "Bear Target Price", "base": "Base Target Price", "bull": "Bull Target Price",
+        "upside": "Upside / downside vs current price", "market_cap": "Implied market cap", "net_cash": "Net cash",
+        "apply_net_cash": "Add net cash per share to P/E target prices", "explanation": "Target Price Change Explanation",
+        "dcf": "DCF Cross-Check", "dcf_note": "DCF is highly sensitive to WACC and terminal growth.", "wacc": "WACC", "terminal_growth": "Terminal growth",
+        "dcf_value": "DCF fair value per share", "dcf_diff": "Difference vs P/E base target", "sensitivity": "Sensitivity Analysis",
+        "dcf_error": "WACC must be greater than terminal growth. DCF cannot be calculated.", "summary": "Assumption Summary",
+        "method": "All calculations use editable stored assumptions and manually entered values. No proprietary research text is retrieved or displayed.",
+        "increased": "Target price increased because actual results improved the UBS-style baseline comparison and the Nomura-style industry overlay is {regime}.",
+        "decreased": "Target price decreased because actual results weakened the UBS-style baseline comparison or the Nomura-style industry overlay is {regime}.",
+    },
+    "\u4e2d\u6587": {
+        "tab": "\u7f8e\u5149\u4f30\u503c\u6a21\u578b", "title": "MU Memory Re-rating Valuation Model", "overview": "\u6a21\u578b\u6982\u89c8",
+        "intro": "\u8be5\u6a21\u578b\u5c06\u7f8e\u5149\u6700\u65b0\u8d22\u62a5\u5b9e\u9645\u6570\u636e\u4e0e UBS \u98ce\u683c\u57fa\u51c6\u9884\u6d4b\u8fdb\u884c\u5bf9\u6bd4\uff0c\u6839\u636e\u8d85\u9884\u671f\u6216\u4f4e\u4e8e\u9884\u671f\u7684\u7a0b\u5ea6\u4fee\u6b63\u672a\u6765 EPS \u548c FCF\uff0c\u5e76\u7ed3\u5408\u91ce\u6751\u98ce\u683c\u7684\u5185\u5b58\u884c\u4e1a\u666f\u6c14\u5ea6 overlay\uff0c\u81ea\u52a8\u8ba1\u7b97 Bear/Base/Bull \u4e09\u79cd\u76ee\u6807\u4ef7\u3002",
+        "disclaimer": "\u8fd9\u662f\u4e2a\u4eba\u7814\u7a76\u6a21\u578b\uff0c\u4e0d\u6784\u6210\u6295\u8d44\u5efa\u8bae\u3002", "baseline": "UBS \u57fa\u51c6\u9884\u6d4b", "baseline_note": "\u4ee5\u4e0b UBS \u98ce\u683c\u5047\u8bbe\u53ef\u7f16\u8f91\u3002\u9884\u6d4b\u53d8\u5316\u540e\u8bf7\u624b\u52a8\u66f4\u65b0\u3002",
+        "quarterly": "\u5b63\u5ea6 UBS \u98ce\u683c\u57fa\u51c6\uff1aMU FQ3 2026", "annual": "\u5e74\u5ea6 UBS \u98ce\u683c\u57fa\u51c6", "valuation": "C2029E \u4f30\u503c\u5047\u8bbe",
+        "actual": "\u5b9e\u9645\u8d22\u62a5\u8f93\u5165", "actual_note": "\u624b\u52a8\u8f93\u5165 MU \u6700\u65b0\u4e1a\u7ee9\u3002\u5982\u679c\u53ef\u7528\uff0c\u5f53\u524d\u4ef7\u683c\u53ef\u4f7f\u7528\u4eea\u8868\u677f\u62a5\u4ef7\u3002",
+        "use_quote": "\u5982\u679c\u53ef\u7528\uff0c\u4f7f\u7528\u81ea\u52a8\u83b7\u53d6\u7684 MU \u80a1\u4ef7", "price_warning": "\u65e0\u6cd5\u83b7\u53d6\u5f53\u524d MU \u80a1\u4ef7\u3002\u8bf7\u624b\u52a8\u8f93\u5165\u3002",
+        "actual_revenue": "\u5b9e\u9645\u6536\u5165\uff0c\u5341\u4ebf\u7f8e\u5143", "actual_gm": "\u5b9e\u9645\u6bdb\u5229\u7387\uff0c%", "actual_om": "\u5b9e\u9645\u8425\u4e1a\u5229\u6da6\u7387\uff0c%", "actual_eps": "\u5b9e\u9645 EPS", "actual_fcf": "\u5b9e\u9645\u81ea\u7531\u73b0\u91d1\u6d41\uff0c\u5341\u4ebf\u7f8e\u5143", "actual_capex": "\u5b9e\u9645\u8d44\u672c\u5f00\u652f\uff0c\u5341\u4ebf\u7f8e\u5143", "actual_cash": "\u5b9e\u9645\u73b0\u91d1\uff0c\u5341\u4ebf\u7f8e\u5143", "actual_debt": "\u5b9e\u9645\u503a\u52a1\uff0c\u5341\u4ebf\u7f8e\u5143", "shares": "\u5b9e\u9645\u7a00\u91ca\u80a1\u6570\uff0c\u5341\u4ebf", "share_price": "\u5f53\u524d MU \u80a1\u4ef7",
+        "surprise": "\u8d85\u9884\u671f\u5206\u6790", "weighted": "\u52a0\u6743\u8d85\u9884\u671f\u5206\u6570", "overall": "\u6574\u4f53\u7ed3\u679c", "metric": "\u6307\u6807", "forecast": "UBS \u9884\u6d4b", "actual_col": "\u5b9e\u9645", "surprise_col": "\u5dee\u8ddd", "interpretation": "\u89e3\u8bfb", "revenue_surprise": "\u6536\u5165\u5dee\u8ddd", "eps_surprise": "EPS \u5dee\u8ddd", "fcf_surprise": "\u81ea\u7531\u73b0\u91d1\u6d41\u5dee\u8ddd", "gm_surprise": "\u6bdb\u5229\u7387\u5dee\u8ddd", "om_surprise": "\u8425\u4e1a\u5229\u6da6\u7387\u5dee\u8ddd",
+        "revision": "\u9884\u6d4b\u4fee\u6b63", "advanced": "\u9ad8\u7ea7\u8bbe\u7f6e", "pass_through": "\u8d85\u9884\u671f\u4f20\u5bfc\u5047\u8bbe", "forecast_item": "\u9884\u6d4b\u9879\u76ee", "updated_estimate": "\u66f4\u65b0\u540e\u6a21\u578b\u4f30\u7b97", "change": "\u53d8\u5316 %", "next_q": "\u4e0b\u4e00\u5b63\u5ea6",
+        "industry": "\u91ce\u6751\u884c\u4e1a\u666f\u6c14\u5ea6 Overlay", "industry_note": "\u8be5\u53ef\u7f16\u8f91\u8bc4\u5206\u9762\u677f\u4f7f\u7528\u91ce\u6751\u98ce\u683c\u7684\u5185\u5b58\u5468\u671f\u6846\u67b6\uff0c\u4e0d\u663e\u793a\u6216\u83b7\u53d6\u4efb\u4f55\u4e13\u6709\u62a5\u544a\u6587\u672c\u3002", "industry_score": "\u884c\u4e1a\u5206\u6570", "target_pe": "\u76ee\u6807\u5e02\u76c8\u7387", "regime": "\u884c\u4e1a\u72b6\u6001", "score_help": "-2 = \u975e\u5e38\u8d1f\u9762\uff0c-1 = \u8d1f\u9762\uff0c0 = \u4e2d\u6027\uff0c+1 = \u6b63\u9762\uff0c+2 = \u975e\u5e38\u6b63\u9762",
+        "output": "\u76ee\u6807\u4ef7\u8f93\u51fa", "bear": "\u60b2\u89c2\u76ee\u6807\u4ef7", "base": "\u57fa\u51c6\u76ee\u6807\u4ef7", "bull": "\u4e50\u89c2\u76ee\u6807\u4ef7", "upside": "\u76f8\u5bf9\u5f53\u524d\u4ef7\u683c\u7684\u4e0a\u6da8 / \u4e0b\u8dcc\u7a7a\u95f4", "market_cap": "\u9690\u542b\u5e02\u503c", "net_cash": "\u51c0\u73b0\u91d1", "apply_net_cash": "\u5c06\u6bcf\u80a1\u51c0\u73b0\u91d1\u52a0\u5165 P/E \u76ee\u6807\u4ef7", "explanation": "\u76ee\u6807\u4ef7\u53d8\u5316\u8bf4\u660e",
+        "dcf": "DCF \u4ea4\u53c9\u9a8c\u8bc1", "dcf_note": "DCF \u5bf9 WACC \u548c\u7ec8\u503c\u589e\u957f\u7387\u9ad8\u5ea6\u654f\u611f\u3002", "wacc": "WACC", "terminal_growth": "\u7ec8\u503c\u589e\u957f\u7387", "dcf_value": "DCF \u6bcf\u80a1\u516c\u5141\u4ef7\u503c", "dcf_diff": "\u4e0e P/E \u57fa\u51c6\u76ee\u6807\u4ef7\u7684\u5dee\u5f02", "sensitivity": "\u654f\u611f\u6027\u5206\u6790", "dcf_error": "WACC \u5fc5\u987b\u9ad8\u4e8e\u7ec8\u503c\u589e\u957f\u7387\u3002\u65e0\u6cd5\u8ba1\u7b97 DCF\u3002", "summary": "\u5047\u8bbe\u6c47\u603b", "method": "\u6240\u6709\u8ba1\u7b97\u4ec5\u4f7f\u7528\u53ef\u7f16\u8f91\u7684\u5df2\u5b58\u5047\u8bbe\u548c\u624b\u52a8\u8f93\u5165\u503c\u3002\u4e0d\u83b7\u53d6\u6216\u663e\u793a\u4e13\u6709\u7814\u7a76\u6587\u672c\u3002",
+        "increased": "\u76ee\u6807\u4ef7\u4e0a\u5347\uff0c\u56e0\u4e3a\u5b9e\u9645\u7ed3\u679c\u6539\u5584\u4e86 UBS \u98ce\u683c\u57fa\u51c6\u5bf9\u6bd4\uff0c\u4e14\u91ce\u6751\u98ce\u683c\u884c\u4e1a overlay \u5904\u4e8e {regime} \u72b6\u6001\u3002", "decreased": "\u76ee\u6807\u4ef7\u4e0b\u964d\uff0c\u56e0\u4e3a\u5b9e\u9645\u7ed3\u679c\u524a\u5f31\u4e86 UBS \u98ce\u683c\u57fa\u51c6\u5bf9\u6bd4\uff0c\u6216\u91ce\u6751\u98ce\u683c\u884c\u4e1a overlay \u5904\u4e8e {regime} \u72b6\u6001\u3002",
+    },
+    "Espa\u00f1ol": {
+        "tab": "Modelo de valoraci\u00f3n de MU", "title": "MU Memory Re-rating Valuation Model", "overview": "Resumen del modelo",
+        "intro": "Este modelo compara los \u00faltimos resultados reportados de Micron con previsiones base estilo UBS, ajusta las hip\u00f3tesis futuras de EPS y FCF seg\u00fan la sorpresa, aplica una capa sectorial de memoria estilo Nomura y calcula precios objetivo Bear/Base/Bull.",
+        "disclaimer": "Este es un modelo personal de investigaci\u00f3n, no asesoramiento de inversi\u00f3n.", "baseline": "Previsiones base estilo UBS", "baseline_note": "Las hip\u00f3tesis almacenadas estilo UBS se pueden editar. Actual\u00edcelas manualmente cuando cambien las previsiones.",
+        "quarterly": "Base trimestral estilo UBS: MU FQ3 2026", "annual": "Base anual estilo UBS", "valuation": "Hip\u00f3tesis de valoraci\u00f3n C2029E", "actual": "Entrada de resultados reales", "actual_note": "Introduzca manualmente los \u00faltimos resultados de MU. El precio actual puede usar la cotizaci\u00f3n del panel si est\u00e1 disponible.", "use_quote": "Usar el precio de MU obtenido autom\u00e1ticamente si est\u00e1 disponible", "price_warning": "No se pudo obtener el precio actual de MU. Introduzca un precio manual.",
+        "actual_revenue": "Ingresos reales, miles de millones USD", "actual_gm": "Margen bruto real, %", "actual_om": "Margen operativo real, %", "actual_eps": "EPS real", "actual_fcf": "Flujo de caja libre real, miles de millones USD", "actual_capex": "Capex real, miles de millones USD", "actual_cash": "Efectivo real, miles de millones USD", "actual_debt": "Deuda real, miles de millones USD", "shares": "Acciones diluidas reales, miles de millones", "share_price": "Precio actual de MU",
+        "surprise": "An\u00e1lisis de sorpresa", "weighted": "Puntuaci\u00f3n ponderada de sorpresa", "overall": "Resultado general", "metric": "M\u00e9trica", "forecast": "Previsi\u00f3n UBS", "actual_col": "Real", "surprise_col": "Sorpresa", "interpretation": "Interpretaci\u00f3n", "revenue_surprise": "Sorpresa de ingresos", "eps_surprise": "Sorpresa de EPS", "fcf_surprise": "Sorpresa de flujo de caja libre", "gm_surprise": "Sorpresa de margen bruto", "om_surprise": "Sorpresa de margen operativo",
+        "revision": "Revisi\u00f3n de previsiones", "advanced": "Configuraci\u00f3n avanzada", "pass_through": "Hip\u00f3tesis de transmisi\u00f3n de sorpresa", "forecast_item": "Partida prevista", "updated_estimate": "Estimaci\u00f3n actualizada", "change": "Cambio %", "next_q": "Pr\u00f3ximo trimestre",
+        "industry": "Capa sectorial estilo Nomura", "industry_note": "Este panel editable usa un marco de ciclo de memoria estilo Nomura. No muestra ni recupera texto de informes propietarios.", "industry_score": "Puntuaci\u00f3n sectorial", "target_pe": "P/E objetivo", "regime": "R\u00e9gimen sectorial", "score_help": "-2 = Muy negativo, -1 = Negativo, 0 = Neutral, +1 = Positivo, +2 = Muy positivo",
+        "output": "Resultado de precios objetivo", "bear": "Precio objetivo bajista", "base": "Precio objetivo base", "bull": "Precio objetivo alcista", "upside": "Potencial vs precio actual", "market_cap": "Capitalizaci\u00f3n impl\u00edcita", "net_cash": "Efectivo neto", "apply_net_cash": "A\u00f1adir efectivo neto por acci\u00f3n a los objetivos P/E", "explanation": "Explicaci\u00f3n del cambio del precio objetivo",
+        "dcf": "Verificaci\u00f3n DCF", "dcf_note": "El DCF es muy sensible al WACC y al crecimiento terminal.", "wacc": "WACC", "terminal_growth": "Crecimiento terminal", "dcf_value": "Valor razonable DCF por acci\u00f3n", "dcf_diff": "Diferencia vs objetivo base P/E", "sensitivity": "An\u00e1lisis de sensibilidad", "dcf_error": "El WACC debe superar el crecimiento terminal. No se puede calcular el DCF.", "summary": "Resumen de hip\u00f3tesis", "method": "Todos los c\u00e1lculos usan hip\u00f3tesis almacenadas editables y valores introducidos manualmente. No se recupera ni muestra texto de investigaci\u00f3n propietario.",
+        "increased": "El precio objetivo aument\u00f3 porque los resultados reales mejoraron la comparaci\u00f3n con la base estilo UBS y la capa sectorial estilo Nomura es {regime}.", "decreased": "El precio objetivo disminuy\u00f3 porque los resultados reales debilitaron la comparaci\u00f3n con la base estilo UBS o la capa sectorial estilo Nomura es {regime}.",
+    },
+}
+
+MU_FACTOR_TEXT = {
+    "English": ["DRAM ASP strength", "HBM ASP strength", "NAND ASP strength", "LTA confidence", "AI inference / agentic AI demand strength", "Memory supply constraint", "AI capex slowdown risk", "Data center construction delay risk", "Power bottleneck risk", "Higher-rate financing risk", "Export controls / geopolitical risk", "Memory ASP correction risk"],
+    "\u4e2d\u6587": ["DRAM ASP \u5f3a\u5ea6", "HBM ASP \u5f3a\u5ea6", "NAND ASP \u5f3a\u5ea6", "LTA \u4fe1\u5fc3", "AI \u63a8\u7406 / agentic AI \u9700\u6c42\u5f3a\u5ea6", "\u5185\u5b58\u4f9b\u5e94\u7d27\u5f20", "AI \u8d44\u672c\u5f00\u652f\u653e\u7f13\u98ce\u9669", "\u6570\u636e\u4e2d\u5fc3\u5efa\u8bbe\u5ef6\u8fdf\u98ce\u9669", "\u7535\u529b\u74f6\u9888\u98ce\u9669", "\u9ad8\u5229\u7387\u878d\u8d44\u98ce\u9669", "\u51fa\u53e3\u7ba1\u5236 / \u5730\u7f18\u653f\u6cbb\u98ce\u9669", "\u5185\u5b58 ASP \u56de\u8c03\u98ce\u9669"],
+    "Espa\u00f1ol": ["Fortaleza del ASP de DRAM", "Fortaleza del ASP de HBM", "Fortaleza del ASP de NAND", "Confianza en LTA", "Fortaleza de demanda de inferencia / IA ag\u00e9ntica", "Restricci\u00f3n de oferta de memoria", "Riesgo de desaceleraci\u00f3n del capex de IA", "Riesgo de retrasos en centros de datos", "Riesgo de cuello de botella energ\u00e9tico", "Riesgo de financiaci\u00f3n a tipos altos", "Riesgo de controles de exportaci\u00f3n / geopol\u00edtico", "Riesgo de correcci\u00f3n del ASP de memoria"],
+}
+MU_FACTOR_DEFAULTS = [1, 2, 1, 1, 2, 1, 0, -1, -1, 0, -1, -1]
+MU_TERM_TEXT = {
+    "English": {
+        "revenue_usd": "Revenue (USD bn)", "gross_margin": "Gross margin", "operating_margin": "Operating margin", "non_gaap_eps": "Non-GAAP EPS", "fcf_usd": "FCF (USD bn)", "base_pe": "Base P/E", "coe": "COE / discount rate, %", "discount_years": "Discount years", "updated_c2029_eps": "Updated C2029E EPS", "assumption": "Assumption", "value": "Value", "current_mu_price": "Current MU price", "actual_capex_usd": "Actual capex (USD bn)", "net_cash_usd": "Net cash (USD bn)", "diluted_shares_b": "Diluted shares (bn)",
+        "financial_note": "Reference formulas: gross margin = gross profit / revenue; operating margin = operating income / revenue; FCF = operating cash flow - capex.",
+    },
+    "\u4e2d\u6587": {
+        "revenue_usd": "\u6536\u5165\uff08\u5341\u4ebf\u7f8e\u5143\uff09", "gross_margin": "\u6bdb\u5229\u7387", "operating_margin": "\u8425\u4e1a\u5229\u6da6\u7387", "non_gaap_eps": "\u975e GAAP EPS", "fcf_usd": "FCF\uff08\u5341\u4ebf\u7f8e\u5143\uff09", "base_pe": "\u57fa\u51c6 P/E", "coe": "COE / \u6298\u73b0\u7387\uff0c%", "discount_years": "\u6298\u73b0\u5e74\u6570", "updated_c2029_eps": "\u66f4\u65b0\u540e C2029E EPS", "assumption": "\u5047\u8bbe", "value": "\u6570\u503c", "current_mu_price": "\u5f53\u524d MU \u80a1\u4ef7", "actual_capex_usd": "\u5b9e\u9645\u8d44\u672c\u5f00\u652f\uff08\u5341\u4ebf\u7f8e\u5143\uff09", "net_cash_usd": "\u51c0\u73b0\u91d1\uff08\u5341\u4ebf\u7f8e\u5143\uff09", "diluted_shares_b": "\u7a00\u91ca\u80a1\u6570\uff08\u5341\u4ebf\uff09",
+        "financial_note": "\u53c2\u8003\u516c\u5f0f\uff1a\u6bdb\u5229\u7387 = \u6bdb\u5229 / \u6536\u5165\uff1b\u8425\u4e1a\u5229\u6da6\u7387 = \u8425\u4e1a\u5229\u6da6 / \u6536\u5165\uff1bFCF = \u7ecf\u8425\u73b0\u91d1\u6d41 - \u8d44\u672c\u5f00\u652f\u3002",
+    },
+    "Espa\u00f1ol": {
+        "revenue_usd": "Ingresos (miles de millones USD)", "gross_margin": "Margen bruto", "operating_margin": "Margen operativo", "non_gaap_eps": "EPS no GAAP", "fcf_usd": "FCF (miles de millones USD)", "base_pe": "P/E base", "coe": "COE / tasa de descuento, %", "discount_years": "A\u00f1os de descuento", "updated_c2029_eps": "EPS C2029E actualizado", "assumption": "Hip\u00f3tesis", "value": "Valor", "current_mu_price": "Precio actual de MU", "actual_capex_usd": "Capex real (miles de millones USD)", "net_cash_usd": "Efectivo neto (miles de millones USD)", "diluted_shares_b": "Acciones diluidas (miles de millones)",
+        "financial_note": "F\u00f3rmulas de referencia: margen bruto = beneficio bruto / ingresos; margen operativo = beneficio operativo / ingresos; FCF = flujo de caja operativo - capex.",
+    },
+}
+MU_RESULT_TEXT = {
+    "English": {"Strong beat": "Strong beat", "Beat": "Beat", "In line": "In line", "Miss": "Miss", "Large miss": "Large miss", "Strong Beat": "Strong Beat", "In Line": "In Line", "Large Miss": "Large Miss", "Very negative": "Very negative", "Negative": "Negative", "Neutral/Base": "Neutral/Base", "Positive": "Positive", "Very positive": "Very positive"},
+    "\u4e2d\u6587": {"Strong beat": "\u5927\u5e45\u8d85\u9884\u671f", "Beat": "\u8d85\u9884\u671f", "In line": "\u7b26\u5408\u9884\u671f", "Miss": "\u4f4e\u4e8e\u9884\u671f", "Large miss": "\u5927\u5e45\u4f4e\u4e8e\u9884\u671f", "Strong Beat": "\u5927\u5e45\u8d85\u9884\u671f", "In Line": "\u7b26\u5408\u9884\u671f", "Large Miss": "\u5927\u5e45\u4f4e\u4e8e\u9884\u671f", "Very negative": "\u975e\u5e38\u8d1f\u9762", "Negative": "\u8d1f\u9762", "Neutral/Base": "\u4e2d\u6027 / \u57fa\u51c6", "Positive": "\u6b63\u9762", "Very positive": "\u975e\u5e38\u6b63\u9762"},
+    "Espa\u00f1ol": {"Strong beat": "Supera ampliamente", "Beat": "Supera", "In line": "En l\u00ednea", "Miss": "Por debajo", "Large miss": "Muy por debajo", "Strong Beat": "Supera ampliamente", "In Line": "En l\u00ednea", "Large Miss": "Muy por debajo", "Very negative": "Muy negativo", "Negative": "Negativo", "Neutral/Base": "Neutral/Base", "Positive": "Positivo", "Very positive": "Muy positivo"},
+}
+
+
+def mt(key):
+    language = st.session_state.get("language", "English")
+    return MU_TEXT.get(language, MU_TEXT["English"]).get(key, MU_TEXT["English"].get(key, key))
+
+
+def ml(key):
+    language = st.session_state.get("language", "English")
+    return MU_TERM_TEXT.get(language, MU_TERM_TEXT["English"]).get(key, MU_TERM_TEXT["English"].get(key, key))
+
+
+def mr(key):
+    language = st.session_state.get("language", "English")
+    return MU_RESULT_TEXT.get(language, MU_RESULT_TEXT["English"]).get(key, key)
+
+
+def calculate_surprise(actual, forecast):
+    return actual / forecast - 1 if forecast else 0.0
+
+
+def calculate_margin_surprise(actual_margin, forecast_margin):
+    return actual_margin - forecast_margin
+
+
+def classify_surprise(score, weighted=False):
+    if weighted:
+        return "Strong Beat" if score >= 0.10 else "Beat" if score >= 0.03 else "In Line" if score >= -0.03 else "Miss" if score > -0.10 else "Large Miss"
+    return "Strong beat" if score > 0.05 else "Beat" if score >= 0.01 else "In line" if score >= -0.01 else "Miss" if score >= -0.05 else "Large miss"
+
+
+def calculate_weighted_surprise(eps, revenue, fcf, gross_margin, operating_margin):
+    return 0.35 * eps + 0.25 * revenue + 0.20 * fcf + 0.10 * gross_margin + 0.10 * operating_margin
+
+
+def revise_forecasts(baseline, score, pass_through):
+    return {
+        "Next quarter EPS": baseline["FQ3_2026"]["eps"] * (1 + score * pass_through["next_q"]),
+        "FY2026 EPS": baseline["FY2026"]["eps"] * (1 + score * pass_through["fy2026"]),
+        "FY2027 EPS": baseline["FY2027"]["eps"] * (1 + score * pass_through["fy2027"]),
+        "C2029E EPS": baseline["C2029"]["eps"] * (1 + score * pass_through["c2029"]),
+        "FY2026 FCF": baseline["FY2026"]["fcf_b"] * (1 + score * pass_through["fy2026"]),
+        "FY2027 FCF": baseline["FY2027"]["fcf_b"] * (1 + score * pass_through["fy2027"]),
+        "FY2028 FCF": baseline["FY2028"]["fcf_b"] * (1 + score * pass_through["fy2028"]),
+    }
+
+
+def calculate_industry_score(scores):
+    return sum(scores)
+
+
+def industry_score_to_pe(score):
+    return 11.0 if score <= -6 else 13.0 if score <= -2 else 15.0 if score <= 3 else 16.0 if score <= 7 else 17.0
+
+
+def industry_regime(score):
+    return "Very negative" if score <= -6 else "Negative" if score <= -2 else "Neutral/Base" if score <= 3 else "Positive" if score <= 7 else "Very positive"
+
+
+def calculate_target_price(eps, pe, coe, discount_years):
+    return eps * pe / ((1 + coe) ** discount_years)
+
+
+def calculate_dcf_value(fcfs, wacc, terminal_growth, net_cash_b, diluted_shares_b):
+    if wacc <= terminal_growth or diluted_shares_b <= 0:
+        return None
+    enterprise_value = sum(fcf / ((1 + wacc) ** year) for year, fcf in enumerate(fcfs, start=1))
+    terminal_value = fcfs[-1] * (1 + terminal_growth) / (wacc - terminal_growth)
+    enterprise_value += terminal_value / ((1 + wacc) ** len(fcfs))
+    return (enterprise_value + net_cash_b) / diluted_shares_b
+
+
+def create_sensitivity_table(fcfs, net_cash_b, diluted_shares_b):
+    growth_rates = [0.015, 0.020, 0.025, 0.030, 0.035]
+    rows = {}
+    for wacc in [0.10, 0.11, 0.12, 0.13, 0.14]:
+        rows[f"{wacc:.0%}"] = {f"{growth:.1%}": calculate_dcf_value(fcfs, wacc, growth, net_cash_b, diluted_shares_b) for growth in growth_rates}
+    return pd.DataFrame.from_dict(rows, orient="index").map(lambda value: f"${value:,.2f}" if value is not None else "N/A")
+
+
+def _baseline_input(label, value, key, percent=False):
+    displayed = value * 100 if percent else value
+    updated = st.number_input(label, value=float(displayed), step=0.1 if percent else 0.01, key=key)
+    return updated / 100 if percent else updated
+
+
+def render_mu_valuation_model(snapshots):
+    st.header(mt("title"))
+    st.subheader(mt("overview"))
+    st.write(mt("intro"))
+    st.warning(mt("disclaimer"))
+    st.info(mt("method"))
+
+    baseline = {period: values.copy() for period, values in UBS_BASELINE.items()}
+    with st.expander(mt("baseline"), expanded=False):
+        st.caption(mt("baseline_note"))
+        st.markdown(f"#### {mt('quarterly')}")
+        cols = st.columns(5)
+        for column, (field, label, percent) in zip(cols, [("revenue_b", ml("revenue_usd"), False), ("gross_margin", ml("gross_margin"), True), ("operating_margin", ml("operating_margin"), True), ("eps", ml("non_gaap_eps"), False), ("fcf_b", ml("fcf_usd"), False)]):
+            with column:
+                baseline["FQ3_2026"][field] = _baseline_input(label, baseline["FQ3_2026"][field], f"mu_fq3_{field}", percent)
+        st.markdown(f"#### {mt('annual')}")
+        for period in ("FY2026", "FY2027", "FY2028"):
+            cols = st.columns(3)
+            for column, (field, label) in zip(cols, [("revenue_b", ml("revenue_usd")), ("eps", "EPS"), ("fcf_b", ml("fcf_usd"))]):
+                with column:
+                    baseline[period][field] = _baseline_input(f"{period} {label}", baseline[period][field], f"mu_{period}_{field}")
+        st.markdown(f"#### {mt('valuation')}")
+        cols = st.columns(4)
+        with cols[0]: baseline["C2029"]["eps"] = _baseline_input("C2029E EPS", baseline["C2029"]["eps"], "mu_c2029_eps")
+        with cols[1]: baseline["C2029"]["base_pe"] = _baseline_input(ml("base_pe"), baseline["C2029"]["base_pe"], "mu_c2029_pe")
+        with cols[2]: baseline["C2029"]["coe"] = _baseline_input(ml("coe"), baseline["C2029"]["coe"], "mu_c2029_coe", True)
+        with cols[3]: baseline["C2029"]["discount_years"] = _baseline_input(ml("discount_years"), baseline["C2029"]["discount_years"], "mu_c2029_years")
+
+    st.subheader(mt("actual"))
+    st.caption(mt("actual_note"))
+    st.info(ml("financial_note"))
+    cols = st.columns(3)
+    with cols[0]:
+        actual_revenue = st.number_input(mt("actual_revenue"), value=23.860, step=0.01, key="mu_actual_revenue")
+        actual_gm = st.number_input(mt("actual_gm"), value=74.4, step=0.1, key="mu_actual_gm") / 100
+        actual_om = st.number_input(mt("actual_om"), value=67.6, step=0.1, key="mu_actual_om") / 100
+        actual_eps = st.number_input(mt("actual_eps"), value=12.07, step=0.01, key="mu_actual_eps")
+    with cols[1]:
+        actual_fcf = st.number_input(mt("actual_fcf"), value=8.538, step=0.01, key="mu_actual_fcf")
+        actual_capex = st.number_input(mt("actual_capex"), value=11.776, step=0.01, key="mu_actual_capex")
+        actual_cash = st.number_input(mt("actual_cash"), value=13.908, step=0.01, key="mu_actual_cash")
+        actual_debt = st.number_input(mt("actual_debt"), value=10.142, step=0.01, key="mu_actual_debt")
+    mu_snapshot = snapshots.get("MU") or {}
+    fetched_price = mu_snapshot.get("price")
+    with cols[2]:
+        diluted_shares = st.number_input(mt("shares"), value=1.142, min_value=0.001, step=0.001, key="mu_shares")
+        use_quote = st.checkbox(mt("use_quote"), value=True, key="mu_use_quote")
+        if use_quote and fetched_price is None:
+            st.warning(mt("price_warning"))
+        current_price = st.number_input(mt("share_price"), value=float(fetched_price or 100.0), min_value=0.01, step=0.1, disabled=bool(use_quote and fetched_price), key="mu_price")
+        if use_quote and fetched_price:
+            current_price = float(fetched_price)
+        st.metric(mt("net_cash"), f"${actual_cash - actual_debt:,.3f}B")
+
+    surprises = {
+        mt("revenue_surprise"): calculate_surprise(actual_revenue, baseline["FQ3_2026"]["revenue_b"]),
+        mt("eps_surprise"): calculate_surprise(actual_eps, baseline["FQ3_2026"]["eps"]),
+        mt("fcf_surprise"): calculate_surprise(actual_fcf, baseline["FQ3_2026"]["fcf_b"]),
+        mt("gm_surprise"): calculate_margin_surprise(actual_gm, baseline["FQ3_2026"]["gross_margin"]),
+        mt("om_surprise"): calculate_margin_surprise(actual_om, baseline["FQ3_2026"]["operating_margin"]),
+    }
+    score = calculate_weighted_surprise(surprises[mt("eps_surprise")], surprises[mt("revenue_surprise")], surprises[mt("fcf_surprise")], surprises[mt("gm_surprise")], surprises[mt("om_surprise")])
+    st.subheader(mt("surprise"))
+    baseline_values = [baseline["FQ3_2026"]["revenue_b"], baseline["FQ3_2026"]["eps"], baseline["FQ3_2026"]["fcf_b"], baseline["FQ3_2026"]["gross_margin"], baseline["FQ3_2026"]["operating_margin"]]
+    actual_values = [actual_revenue, actual_eps, actual_fcf, actual_gm, actual_om]
+    margin_rows = {mt("gm_surprise"), mt("om_surprise")}
+    surprise_rows = []
+    for (label, value), forecast, actual in zip(surprises.items(), baseline_values, actual_values):
+        is_margin = label in margin_rows
+        surprise_rows.append({mt("metric"): label, mt("forecast"): f"{forecast:.1%}" if is_margin else f"{forecast:,.3f}", mt("actual_col"): f"{actual:.1%}" if is_margin else f"{actual:,.3f}", mt("surprise_col"): f"{value * 100:+.1f} pp" if is_margin else f"{value:+.1%}", mt("interpretation"): mr(classify_surprise(value))})
+    st.dataframe(pd.DataFrame(surprise_rows), use_container_width=True, hide_index=True)
+    score_cols = st.columns(2)
+    score_cols[0].metric(mt("weighted"), f"{score:+.2%}")
+    score_cols[1].metric(mt("overall"), mr(classify_surprise(score, weighted=True)))
+
+    with st.expander(mt("advanced"), expanded=False):
+        st.markdown(f"#### {mt('pass_through')}")
+        cols = st.columns(5)
+        pass_through = {}
+        for column, (key, label, default) in zip(cols, [("next_q", mt("next_q"), 0.80), ("fy2026", "FY2026", 0.50), ("fy2027", "FY2027", 0.30), ("fy2028", "FY2028", 0.20), ("c2029", "C2029E EPS", 0.20)]):
+            with column:
+                pass_through[key] = st.number_input(f"{label}, %", value=default * 100, step=1.0, key=f"mu_pass_{key}") / 100
+    revisions = revise_forecasts(baseline, score, pass_through)
+    revision_baseline = {"Next quarter EPS": baseline["FQ3_2026"]["eps"], "FY2026 EPS": baseline["FY2026"]["eps"], "FY2027 EPS": baseline["FY2027"]["eps"], "C2029E EPS": baseline["C2029"]["eps"], "FY2026 FCF": baseline["FY2026"]["fcf_b"], "FY2027 FCF": baseline["FY2027"]["fcf_b"], "FY2028 FCF": baseline["FY2028"]["fcf_b"]}
+    st.subheader(mt("revision"))
+    st.dataframe(pd.DataFrame([{mt("forecast_item"): key, mt("forecast"): f"{revision_baseline[key]:,.2f}", mt("updated_estimate"): f"{value:,.2f}", mt("change"): f"{calculate_surprise(value, revision_baseline[key]):+.2%}"} for key, value in revisions.items()]), use_container_width=True, hide_index=True)
+
+    st.subheader(mt("industry"))
+    st.caption(mt("industry_note"))
+    st.caption(mt("score_help"))
+    factor_scores = []
+    factor_labels = MU_FACTOR_TEXT.get(st.session_state.get("language", "English"), MU_FACTOR_TEXT["English"])
+    factor_cols = st.columns(3)
+    for index, (label, default) in enumerate(zip(factor_labels, MU_FACTOR_DEFAULTS)):
+        with factor_cols[index % 3]:
+            factor_scores.append(st.slider(label, -2, 2, default, key=f"mu_factor_{index}"))
+    industry_score = calculate_industry_score(factor_scores)
+    target_pe = industry_score_to_pe(industry_score)
+    regime = industry_regime(industry_score)
+    industry_cols = st.columns(3)
+    industry_cols[0].metric(mt("industry_score"), f"{industry_score:+d}")
+    industry_cols[1].metric(mt("target_pe"), f"{target_pe:.1f}x")
+    industry_cols[2].metric(mt("regime"), mr(regime))
+
+    net_cash_b = actual_cash - actual_debt
+    add_net_cash = st.checkbox(mt("apply_net_cash"), value=False, key="mu_add_net_cash")
+    net_cash_per_share = net_cash_b / diluted_shares if add_net_cash else 0.0
+    discount = (1 + baseline["C2029"]["coe"]) ** baseline["C2029"]["discount_years"]
+    base_target = calculate_target_price(revisions["C2029E EPS"], target_pe, baseline["C2029"]["coe"], baseline["C2029"]["discount_years"]) + net_cash_per_share
+    bear_target = revisions["C2029E EPS"] * 0.75 * max(8.0, target_pe - 3.0) / discount + net_cash_per_share
+    bull_target = revisions["C2029E EPS"] * 1.15 * (target_pe + 2.0) / discount + net_cash_per_share
+    st.subheader(mt("output"))
+    output_cols = st.columns(4)
+    for column, label, value in zip(output_cols, [ml("updated_c2029_eps"), mt("target_pe"), mt("bear"), mt("base")], [f"${revisions['C2029E EPS']:,.2f}", f"{target_pe:.1f}x", f"${bear_target:,.2f}", f"${base_target:,.2f}"]):
+        column.metric(label, value)
+    output_cols = st.columns(4)
+    output_cols[0].metric(mt("bull"), f"${bull_target:,.2f}")
+    output_cols[1].metric(mt("upside"), f"{calculate_surprise(base_target, current_price):+.1%}")
+    output_cols[2].metric(mt("weighted"), f"{score:+.2%}")
+    output_cols[3].metric(mt("industry_score"), f"{industry_score:+d}")
+    st.dataframe(pd.DataFrame([{mt("metric"): mt("bear"), mt("share_price"): bear_target, mt("upside"): calculate_surprise(bear_target, current_price), mt("market_cap"): bear_target * diluted_shares}, {mt("metric"): mt("base"), mt("share_price"): base_target, mt("upside"): calculate_surprise(base_target, current_price), mt("market_cap"): base_target * diluted_shares}, {mt("metric"): mt("bull"), mt("share_price"): bull_target, mt("upside"): calculate_surprise(bull_target, current_price), mt("market_cap"): bull_target * diluted_shares}]).style.format({mt("share_price"): "${:,.2f}", mt("upside"): "{:+.1%}", mt("market_cap"): "${:,.1f}B"}), use_container_width=True, hide_index=True)
+    st.markdown(f"#### {mt('explanation')}")
+    original_base_target = calculate_target_price(baseline["C2029"]["eps"], baseline["C2029"]["base_pe"], baseline["C2029"]["coe"], baseline["C2029"]["discount_years"])
+    st.write(mt("increased" if base_target >= original_base_target else "decreased").format(regime=mr(regime)))
+
+    st.subheader(mt("dcf"))
+    st.warning(mt("dcf_note"))
+    dcf_cols = st.columns(2)
+    with dcf_cols[0]: wacc = st.number_input(f"{mt('wacc')}, %", value=12.0, step=0.5, key="mu_wacc") / 100
+    with dcf_cols[1]: terminal_growth = st.number_input(f"{mt('terminal_growth')}, %", value=2.5, step=0.1, key="mu_terminal_growth") / 100
+    fcfs = [revisions["FY2026 FCF"], revisions["FY2027 FCF"], revisions["FY2028 FCF"]]
+    fcfs.extend([fcfs[-1] * 0.90, fcfs[-1] * 0.90 * 0.95])
+    dcf_value = calculate_dcf_value(fcfs, wacc, terminal_growth, net_cash_b, diluted_shares)
+    if dcf_value is None:
+        st.error(mt("dcf_error"))
+    else:
+        dcf_cols = st.columns(2)
+        dcf_cols[0].metric(mt("dcf_value"), f"${dcf_value:,.2f}")
+        dcf_cols[1].metric(mt("dcf_diff"), f"{calculate_surprise(dcf_value, base_target):+.1%}")
+    st.markdown(f"#### {mt('sensitivity')}")
+    st.dataframe(create_sensitivity_table(fcfs, net_cash_b, diluted_shares), use_container_width=True)
+    with st.expander(mt("summary"), expanded=False):
+        st.dataframe(pd.DataFrame({ml("assumption"): [ml("current_mu_price"), ml("actual_capex_usd"), ml("net_cash_usd"), ml("diluted_shares_b"), "COE", ml("discount_years"), "WACC", mt("terminal_growth")], ml("value"): [f"${current_price:,.2f}", f"${actual_capex:,.3f}", f"${net_cash_b:,.3f}", f"{diluted_shares:,.3f}", f"{baseline['C2029']['coe']:.1%}", f"{baseline['C2029']['discount_years']:.1f}", f"{wacc:.1%}", f"{terminal_growth:.1%}"]}), use_container_width=True, hide_index=True)
+
+
 st.set_page_config(page_title="Equity Research Terminal", layout="wide")
 st.markdown(
     """
@@ -1230,7 +1554,7 @@ st.divider()
 
 tabs = st.tabs([
     t("technical_analysis"), t("options_gex"), t("value_investing"),
-    t("news_sentiment"), t("multi_agent_research"), t("data_diagnostics"), t("macro"),
+    t("news_sentiment"), t("multi_agent_research"), t("data_diagnostics"), t("macro"), mt("tab"),
 ])
 with tabs[0]:
     render_technical_section()
@@ -1246,3 +1570,5 @@ with tabs[5]:
     render_diagnostics(snapshots)
 with tabs[6]:
     render_macro_section()
+with tabs[7]:
+    render_mu_valuation_model(snapshots)
