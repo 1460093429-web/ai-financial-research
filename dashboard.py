@@ -1331,6 +1331,93 @@ MU_RESULT_TEXT = {
     "Espa\u00f1ol": {"Strong beat": "Supera ampliamente", "Beat": "Supera", "In line": "En l\u00ednea", "Miss": "Por debajo", "Large miss": "Muy por debajo", "Strong Beat": "Supera ampliamente", "In Line": "En l\u00ednea", "Large Miss": "Muy por debajo", "Very negative": "Muy negativo", "Negative": "Negativo", "Neutral/Base": "Neutral/Base", "Positive": "Positivo", "Very positive": "Muy positivo"},
 }
 
+IB_TEXT = {
+    "English": {
+        "title": "Investment Bank Overlay", "note": "Manual, user-editable assumptions only. This overlay does not scrape, retrieve, or display proprietary or paywalled research content.",
+        "ubs_overlay": "UBS Company Overlay", "nomura_overlay": "Nomura Industry Regime Overlay", "goldman_overlay": "Goldman Memory Cycle Overlay",
+        "ubs_score": "UBS Company Score", "nomura_score": "Nomura Industry Score", "goldman_score": "Goldman Cycle Score", "combined_score": "Combined IB Score",
+        "cycle_status": "Cycle status", "pe_adjustment": "P/E Adjustment", "original_pe": "Original Model Target P/E", "adjusted_pe": "IB Adjusted Target P/E",
+        "original_base": "Original Base Target Price", "adjusted_target": "IB Adjusted Target Price", "difference": "Difference", "upside": "Upside / downside vs current MU price",
+        "ib_weights": "Editable investment-bank weights", "ubs_weight": "UBS weight", "nomura_weight": "Nomura weight", "goldman_weight": "Goldman weight",
+        "weight_warning": "Investment-bank weights total {total:.1f}%. Calculations automatically normalize the entered weights to 100%.",
+        "weight_error": "Enter at least one positive investment-bank weight to calculate the overlay.",
+        "assumptions": "Editable Goldman-style assumptions", "supply_demand": "Supply / demand balance", "hbm_outlook": "HBM market assumptions", "year": "Year",
+        "dram": "DRAM supply / demand", "nand": "NAND supply / demand", "hbm": "HBM supply / demand", "hbm_tam": "HBM TAM (USD bn)", "mu_hbm_revenue": "Micron HBM Revenue (USD bn)", "mu_hbm_share": "Micron HBM Market Share",
+        "enhanced": "IB-Enhanced Final Target", "enhanced_weights": "Editable IB-enhanced target weights", "existing_blended": "Existing Final Blended Target", "existing_weight": "Existing final blended target weight", "adjusted_weight": "IB adjusted target price weight",
+        "enhanced_warning": "IB-enhanced target weights total {total:.1f}%. Calculations automatically normalize the entered weights to 100%.",
+        "enhanced_error": "The existing final blended target is unavailable. Enter valid analyst tracker targets and weights to calculate the IB-enhanced final target.",
+        "strong": "Strong re-rating support", "positive": "Positive re-rating support", "neutral": "Neutral / mixed", "weakening": "Cycle weakening", "damaged": "Thesis damaged",
+        "explanation_strong": "UBS, Nomura, and Goldman-style assumptions collectively support a higher-for-longer memory cycle, stronger earnings durability, and potential P/E multiple expansion.",
+        "explanation_positive": "Investment bank assumptions remain supportive, but not aggressive.",
+        "explanation_neutral": "Investment bank assumptions are mixed and do not justify a major multiple change.",
+        "explanation_weak": "Investment bank assumptions are weakening and suggest reducing valuation multiple support.",
+        "score_help": "Score interpretation: 80-100 strongly supports memory re-rating; 60-80 supports memory re-rating; 40-60 neutral / mixed; 20-40 cycle weakening; 0-20 thesis damaged.",
+        "risk_help": "Risk factors are reverse scored: higher raw risk reduces the Nomura score.",
+    },
+    "\u4e2d\u6587": {
+        "title": "\u6295\u884c\u89c2\u70b9 Overlay", "note": "\u4ec5\u4f7f\u7528\u624b\u52a8\u5b58\u50a8\u3001\u7528\u6237\u53ef\u7f16\u8f91\u7684\u5047\u8bbe\u3002\u672c Overlay \u4e0d\u6293\u53d6\u3001\u83b7\u53d6\u6216\u663e\u793a\u4efb\u4f55\u4e13\u6709\u6216\u4ed8\u8d39\u7814\u7a76\u5185\u5bb9\u3002",
+        "ubs_overlay": "UBS \u516c\u53f8\u5c42\u9762 Overlay", "nomura_overlay": "\u91ce\u6751\u884c\u4e1a\u5468\u671f Overlay", "goldman_overlay": "\u9ad8\u76db\u5185\u5b58\u5468\u671f Overlay",
+        "ubs_score": "UBS \u516c\u53f8\u5206\u6570", "nomura_score": "\u91ce\u6751\u884c\u4e1a\u5206\u6570", "goldman_score": "\u9ad8\u76db\u5468\u671f\u5206\u6570", "combined_score": "\u7efc\u5408\u6295\u884c\u5206\u6570",
+        "cycle_status": "\u5468\u671f\u72b6\u6001", "pe_adjustment": "P/E \u8c03\u6574", "original_pe": "\u539f\u6a21\u578b\u76ee\u6807 P/E", "adjusted_pe": "\u6295\u884c\u8c03\u6574\u540e\u76ee\u6807 P/E",
+        "original_base": "\u539f\u57fa\u51c6\u76ee\u6807\u4ef7", "adjusted_target": "\u6295\u884c\u8c03\u6574\u540e\u76ee\u6807\u4ef7", "difference": "\u5dee\u989d", "upside": "\u76f8\u5bf9\u5f53\u524d MU \u80a1\u4ef7\u7684\u4e0a\u6da8 / \u4e0b\u8dcc\u7a7a\u95f4",
+        "ib_weights": "\u53ef\u7f16\u8f91\u7684\u6295\u884c\u6743\u91cd", "ubs_weight": "UBS \u6743\u91cd", "nomura_weight": "\u91ce\u6751\u6743\u91cd", "goldman_weight": "\u9ad8\u76db\u6743\u91cd",
+        "weight_warning": "\u6295\u884c\u6743\u91cd\u5408\u8ba1\u4e3a {total:.1f}%\u3002\u8ba1\u7b97\u65f6\u5df2\u81ea\u52a8\u5f52\u4e00\u5316\u4e3a 100%\u3002", "weight_error": "\u8bf7\u81f3\u5c11\u8f93\u5165\u4e00\u4e2a\u6b63\u6570\u6295\u884c\u6743\u91cd\u3002",
+        "assumptions": "\u53ef\u7f16\u8f91\u7684\u9ad8\u76db\u98ce\u683c\u5047\u8bbe", "supply_demand": "\u4f9b\u9700\u5e73\u8861", "hbm_outlook": "HBM \u5e02\u573a\u5047\u8bbe", "year": "\u5e74\u4efd",
+        "dram": "DRAM \u4f9b\u9700", "nand": "NAND \u4f9b\u9700", "hbm": "HBM \u4f9b\u9700", "hbm_tam": "HBM TAM\uff08\u5341\u4ebf\u7f8e\u5143\uff09", "mu_hbm_revenue": "\u7f8e\u5149 HBM \u6536\u5165\uff08\u5341\u4ebf\u7f8e\u5143\uff09", "mu_hbm_share": "\u7f8e\u5149 HBM \u5e02\u573a\u4efd\u989d",
+        "enhanced": "\u6295\u884c\u589e\u5f3a\u7efc\u5408\u76ee\u6807\u4ef7", "enhanced_weights": "\u53ef\u7f16\u8f91\u7684\u6295\u884c\u589e\u5f3a\u76ee\u6807\u6743\u91cd", "existing_blended": "\u73b0\u6709\u6700\u7ec8\u6df7\u5408\u76ee\u6807\u4ef7", "existing_weight": "\u73b0\u6709\u6700\u7ec8\u6df7\u5408\u76ee\u6807\u4ef7\u6743\u91cd", "adjusted_weight": "\u6295\u884c\u8c03\u6574\u540e\u76ee\u6807\u4ef7\u6743\u91cd",
+        "enhanced_warning": "\u6295\u884c\u589e\u5f3a\u76ee\u6807\u6743\u91cd\u5408\u8ba1\u4e3a {total:.1f}%\u3002\u8ba1\u7b97\u65f6\u5df2\u81ea\u52a8\u5f52\u4e00\u5316\u4e3a 100%\u3002", "enhanced_error": "\u73b0\u6709\u6700\u7ec8\u6df7\u5408\u76ee\u6807\u4ef7\u4e0d\u53ef\u7528\u3002\u8bf7\u5728\u673a\u6784\u76ee\u6807\u4ef7\u8ffd\u8e2a\u5668\u4e2d\u8f93\u5165\u6709\u6548\u7684\u76ee\u6807\u4ef7\u548c\u6743\u91cd\u3002",
+        "strong": "\u5f3a\u529b\u652f\u6301\u91cd\u4f30", "positive": "\u6b63\u9762\u652f\u6301\u91cd\u4f30", "neutral": "\u4e2d\u6027 / \u6df7\u5408", "weakening": "\u5468\u671f\u8d70\u5f31", "damaged": "\u903b\u8f91\u53d7\u635f",
+        "explanation_strong": "UBS\u3001\u91ce\u6751\u548c\u9ad8\u76db\u98ce\u683c\u5047\u8bbe\u5171\u540c\u652f\u6301\u5185\u5b58\u5468\u671f\u66f4\u957f\u3001\u76c8\u5229\u6301\u7eed\u6027\u66f4\u5f3a\uff0c\u4ee5\u53ca\u6f5c\u5728 P/E \u500d\u6570\u6269\u5f20\u3002",
+        "explanation_positive": "\u6295\u884c\u5047\u8bbe\u4ecd\u7136\u63d0\u4f9b\u652f\u6301\uff0c\u4f46\u5e76\u4e0d\u6fc0\u8fdb\u3002", "explanation_neutral": "\u6295\u884c\u5047\u8bbe\u8868\u73b0\u6df7\u5408\uff0c\u4e0d\u8db3\u4ee5\u652f\u6301\u5927\u5e45\u8c03\u6574\u4f30\u503c\u500d\u6570\u3002", "explanation_weak": "\u6295\u884c\u5047\u8bbe\u8d70\u5f31\uff0c\u5efa\u8bae\u964d\u4f4e\u4f30\u503c\u500d\u6570\u652f\u6301\u3002",
+        "score_help": "\u5206\u6570\u89e3\u8bfb\uff1a80-100 \u5f3a\u529b\u652f\u6301\u5185\u5b58\u91cd\u4f30\uff1b60-80 \u652f\u6301\u5185\u5b58\u91cd\u4f30\uff1b40-60 \u4e2d\u6027 / \u6df7\u5408\uff1b20-40 \u5468\u671f\u8d70\u5f31\uff1b0-20 \u903b\u8f91\u53d7\u635f\u3002", "risk_help": "\u98ce\u9669\u56e0\u5b50\u53cd\u5411\u8ba1\u5206\uff1a\u539f\u59cb\u98ce\u9669\u8d8a\u9ad8\uff0c\u91ce\u6751\u5206\u6570\u8d8a\u4f4e\u3002",
+    },
+    "Espa\u00f1ol": {
+        "title": "Overlay de bancos de inversi\u00f3n", "note": "Solo se usan hip\u00f3tesis manuales y editables. Este overlay no extrae, recupera ni muestra contenido propietario o de pago.",
+        "ubs_overlay": "Overlay corporativo UBS", "nomura_overlay": "Overlay de r\u00e9gimen sectorial Nomura", "goldman_overlay": "Overlay del ciclo de memoria Goldman",
+        "ubs_score": "Puntuaci\u00f3n corporativa UBS", "nomura_score": "Puntuaci\u00f3n sectorial Nomura", "goldman_score": "Puntuaci\u00f3n de ciclo Goldman", "combined_score": "Puntuaci\u00f3n IB combinada",
+        "cycle_status": "Estado del ciclo", "pe_adjustment": "Ajuste P/E", "original_pe": "P/E objetivo original del modelo", "adjusted_pe": "P/E objetivo ajustado por IB",
+        "original_base": "Precio objetivo base original", "adjusted_target": "Precio objetivo ajustado por IB", "difference": "Diferencia", "upside": "Potencial vs precio actual de MU",
+        "ib_weights": "Pesos editables de bancos de inversi\u00f3n", "ubs_weight": "Peso UBS", "nomura_weight": "Peso Nomura", "goldman_weight": "Peso Goldman",
+        "weight_warning": "Los pesos de bancos de inversi\u00f3n suman {total:.1f}%. Los c\u00e1lculos los normalizan autom\u00e1ticamente al 100%.", "weight_error": "Introduzca al menos un peso positivo para calcular el overlay.",
+        "assumptions": "Hip\u00f3tesis editables estilo Goldman", "supply_demand": "Balance oferta / demanda", "hbm_outlook": "Hip\u00f3tesis de mercado HBM", "year": "A\u00f1o",
+        "dram": "Oferta / demanda DRAM", "nand": "Oferta / demanda NAND", "hbm": "Oferta / demanda HBM", "hbm_tam": "TAM HBM (miles de millones USD)", "mu_hbm_revenue": "Ingresos HBM de Micron (miles de millones USD)", "mu_hbm_share": "Cuota HBM de Micron",
+        "enhanced": "Precio objetivo final mejorado por bancos", "enhanced_weights": "Pesos editables del objetivo mejorado por IB", "existing_blended": "Objetivo final combinado existente", "existing_weight": "Peso del objetivo combinado existente", "adjusted_weight": "Peso del objetivo ajustado por IB",
+        "enhanced_warning": "Los pesos del objetivo mejorado suman {total:.1f}%. Los c\u00e1lculos los normalizan autom\u00e1ticamente al 100%.", "enhanced_error": "El objetivo final combinado existente no est\u00e1 disponible. Introduzca objetivos y pesos v\u00e1lidos en el seguimiento de analistas.",
+        "strong": "Fuerte apoyo a la revalorizaci\u00f3n", "positive": "Apoyo positivo a la revalorizaci\u00f3n", "neutral": "Neutral / mixto", "weakening": "Debilitamiento del ciclo", "damaged": "Tesis da\u00f1ada",
+        "explanation_strong": "Las hip\u00f3tesis estilo UBS, Nomura y Goldman respaldan en conjunto un ciclo de memoria m\u00e1s largo, mayor durabilidad de beneficios y posible expansi\u00f3n del m\u00faltiplo P/E.",
+        "explanation_positive": "Las hip\u00f3tesis de bancos de inversi\u00f3n siguen siendo favorables, pero no agresivas.", "explanation_neutral": "Las hip\u00f3tesis de bancos de inversi\u00f3n son mixtas y no justifican un cambio importante del m\u00faltiplo.", "explanation_weak": "Las hip\u00f3tesis de bancos de inversi\u00f3n se debilitan y sugieren reducir el apoyo al m\u00faltiplo de valoraci\u00f3n.",
+        "score_help": "Interpretaci\u00f3n: 80-100 apoya firmemente la revalorizaci\u00f3n; 60-80 la apoya; 40-60 neutral / mixto; 20-40 debilitamiento del ciclo; 0-20 tesis da\u00f1ada.", "risk_help": "Los factores de riesgo se punt\u00faan a la inversa: un riesgo bruto mayor reduce la puntuaci\u00f3n Nomura.",
+    },
+}
+
+IB_FACTOR_TEXT = {
+    "English": {
+        "ubs": ["MU EPS durability", "MU FCF durability", "LTA visibility", "HBM revenue contribution", "Margin strength", "Through-cycle earnings power"],
+        "nomura": ["AI / agentic AI demand strength", "Token usage growth", "Memory supply constraint", "Risk premium reduction", "Data center capex durability", "LTA support across memory industry", "Power / data center construction risk", "Higher-rate financing risk"],
+        "goldman": ["DRAM tightness", "NAND tightness", "HBM tightness", "HBM ASP catch-up", "HBM TAM expansion", "Micron HBM revenue growth", "LTA binding strength", "Supply discipline / limited capacity additions"],
+    },
+    "\u4e2d\u6587": {
+        "ubs": ["MU EPS \u6301\u7eed\u6027", "MU FCF \u6301\u7eed\u6027", "LTA \u53ef\u89c1\u5ea6", "HBM \u6536\u5165\u8d21\u732e", "\u5229\u6da6\u7387\u5f3a\u5ea6", "\u8de8\u5468\u671f\u76c8\u5229\u80fd\u529b"],
+        "nomura": ["AI / agentic AI \u9700\u6c42\u5f3a\u5ea6", "Token \u4f7f\u7528\u91cf\u589e\u957f", "\u5185\u5b58\u4f9b\u5e94\u7ea6\u675f", "\u98ce\u9669\u6ea2\u4ef7\u4e0b\u964d", "\u6570\u636e\u4e2d\u5fc3\u8d44\u672c\u5f00\u652f\u6301\u7eed\u6027", "\u5185\u5b58\u884c\u4e1a LTA \u652f\u6301", "\u7535\u529b / \u6570\u636e\u4e2d\u5fc3\u5efa\u8bbe\u98ce\u9669", "\u9ad8\u5229\u7387\u878d\u8d44\u98ce\u9669"],
+        "goldman": ["DRAM \u7d27\u5f20\u5ea6", "NAND \u7d27\u5f20\u5ea6", "HBM \u7d27\u5f20\u5ea6", "HBM ASP \u8ffd\u8d76", "HBM TAM \u6269\u5f20", "\u7f8e\u5149 HBM \u6536\u5165\u589e\u957f", "LTA \u7ea6\u675f\u5f3a\u5ea6", "\u4f9b\u5e94\u7eaa\u5f8b / \u4ea7\u80fd\u589e\u52a0\u6709\u9650"],
+    },
+    "Espa\u00f1ol": {
+        "ubs": ["Durabilidad del EPS de MU", "Durabilidad del FCF de MU", "Visibilidad LTA", "Contribuci\u00f3n de ingresos HBM", "Fortaleza de m\u00e1rgenes", "Capacidad de beneficios durante el ciclo"],
+        "nomura": ["Fortaleza de demanda de IA / IA ag\u00e9ntica", "Crecimiento del uso de tokens", "Restricci\u00f3n de oferta de memoria", "Reducci\u00f3n de prima de riesgo", "Durabilidad del capex de centros de datos", "Apoyo LTA en la industria de memoria", "Riesgo energ\u00e9tico / construcci\u00f3n de centros de datos", "Riesgo de financiaci\u00f3n a tipos altos"],
+        "goldman": ["Tensi\u00f3n DRAM", "Tensi\u00f3n NAND", "Tensi\u00f3n HBM", "Convergencia del ASP de HBM", "Expansi\u00f3n del TAM de HBM", "Crecimiento de ingresos HBM de Micron", "Fortaleza vinculante de LTA", "Disciplina de oferta / adiciones de capacidad limitadas"],
+    },
+}
+IB_FACTOR_DEFAULTS = {
+    "ubs": [8, 8, 8, 8, 8, 8],
+    "nomura": [9, 9, 8, 8, 8, 8, 5, 5],
+    "goldman": [8, 8, 9, 8, 9, 8, 8, 8],
+}
+IB_FACTOR_WEIGHTS = {
+    "ubs": [1, 1, 1, 1, 1, 1],
+    "nomura": [25, 25, 10, 10, 10, 10, 5, 5],
+    "goldman": [25 / 3, 25 / 3, 25, 25 / 3, 25, 25 / 3, 25 / 3, 25 / 3],
+}
+
 
 def mt(key):
     language = st.session_state.get("language", "English")
@@ -1345,6 +1432,11 @@ def ml(key):
 def mr(key):
     language = st.session_state.get("language", "English")
     return MU_RESULT_TEXT.get(language, MU_RESULT_TEXT["English"]).get(key, key)
+
+
+def ibt(key):
+    language = st.session_state.get("language", "English")
+    return IB_TEXT.get(language, IB_TEXT["English"]).get(key, IB_TEXT["English"].get(key, key))
 
 
 def calculate_surprise(actual, forecast):
@@ -1430,6 +1522,43 @@ def calculate_blended_target(model_target, analyst_weighted_target, analyst_cons
     return float((values * weights / weight_total).sum()), weight_total
 
 
+def calculate_normalized_score(scores, weights, reverse_indexes=()):
+    scores = pd.to_numeric(pd.Series(scores), errors="coerce").fillna(0.0).clip(lower=0.0, upper=10.0)
+    weights = pd.to_numeric(pd.Series(weights), errors="coerce").fillna(0.0).clip(lower=0.0)
+    for index in reverse_indexes:
+        scores.iloc[index] = 10.0 - scores.iloc[index]
+    weight_total = float(weights.sum())
+    return float((scores * weights).sum() / weight_total * 10.0) if weight_total > 0 else None
+
+
+def calculate_combined_ib_score(ubs_score, nomura_score, goldman_score, weights):
+    weights = pd.to_numeric(pd.Series(weights), errors="coerce").fillna(0.0).clip(lower=0.0)
+    weight_total = float(weights.sum())
+    if weight_total <= 0:
+        return None, weight_total
+    scores = pd.Series([ubs_score, nomura_score, goldman_score], dtype=float)
+    return float((scores * weights / weight_total).sum()), weight_total
+
+
+def ib_score_to_pe_adjustment(score):
+    return 2.0 if score >= 80 else 1.0 if score >= 60 else 0.0 if score >= 40 else -1.5 if score >= 20 else -3.0
+
+
+def ib_cycle_status(score):
+    return "strong" if score >= 80 else "positive" if score >= 60 else "neutral" if score >= 40 else "weakening" if score >= 20 else "damaged"
+
+
+def calculate_ib_enhanced_target(existing_target, adjusted_target, weights):
+    if existing_target is None or adjusted_target is None:
+        return None, 0.0
+    weights = pd.to_numeric(pd.Series(weights), errors="coerce").fillna(0.0).clip(lower=0.0)
+    weight_total = float(weights.sum())
+    if weight_total <= 0:
+        return None, weight_total
+    values = pd.Series([existing_target, adjusted_target], dtype=float)
+    return float((values * weights / weight_total).sum()), weight_total
+
+
 def calculate_dcf_value(fcfs, wacc, terminal_growth, net_cash_b, diluted_shares_b):
     if wacc <= terminal_growth or diluted_shares_b <= 0:
         return None
@@ -1451,6 +1580,102 @@ def _baseline_input(label, value, key, percent=False):
     displayed = value * 100 if percent else value
     updated = st.number_input(label, value=float(displayed), step=0.1 if percent else 0.01, key=key)
     return updated / 100 if percent else updated
+
+
+def _render_ib_factor_sliders(group, reverse_indexes=()):
+    language = st.session_state.get("language", "English")
+    labels = IB_FACTOR_TEXT.get(language, IB_FACTOR_TEXT["English"])[group]
+    cols = st.columns(3)
+    scores = []
+    for index, (label, default) in enumerate(zip(labels, IB_FACTOR_DEFAULTS[group])):
+        suffix = " (risk)" if index in reverse_indexes else ""
+        with cols[index % 3]:
+            scores.append(st.slider(f"{label}{suffix}", 0, 10, default, key=f"mu_ib_{group}_{index}"))
+    return calculate_normalized_score(scores, IB_FACTOR_WEIGHTS[group], reverse_indexes)
+
+
+def render_mu_investment_bank_overlay(updated_eps, original_target_pe, original_base_target, current_price, coe, discount_years, existing_blended_target):
+    st.subheader(ibt("title"))
+    st.caption(ibt("note"))
+    st.caption(ibt("score_help"))
+
+    st.markdown(f"#### {ibt('ubs_overlay')}")
+    ubs_score = _render_ib_factor_sliders("ubs")
+
+    st.markdown(f"#### {ibt('nomura_overlay')}")
+    st.caption(ibt("risk_help"))
+    nomura_score = _render_ib_factor_sliders("nomura", reverse_indexes=(6, 7))
+
+    st.markdown(f"#### {ibt('goldman_overlay')}")
+    with st.expander(ibt("assumptions"), expanded=False):
+        years = ["2026E", "2027E", "2028E"]
+        st.markdown(f"##### {ibt('supply_demand')}")
+        st.data_editor(
+            pd.DataFrame({ibt("year"): years, ibt("dram"): [-5.0, -5.9, -3.9], ibt("nand"): [-4.4, -4.6, -3.0], ibt("hbm"): [-5.4, -6.0, -4.3]}),
+            width="stretch", hide_index=True, key="mu_ib_goldman_supply_demand",
+            column_config={ibt("dram"): st.column_config.NumberColumn(format="%.1f%%"), ibt("nand"): st.column_config.NumberColumn(format="%.1f%%"), ibt("hbm"): st.column_config.NumberColumn(format="%.1f%%")},
+        )
+        st.markdown(f"##### {ibt('hbm_outlook')}")
+        st.data_editor(
+            pd.DataFrame({ibt("year"): years, ibt("hbm_tam"): [56.0, 116.0, 168.0], ibt("mu_hbm_revenue"): [12.862, 25.242, 35.481], ibt("mu_hbm_share"): [23.0, 22.0, 21.0]}),
+            width="stretch", hide_index=True, key="mu_ib_goldman_hbm_outlook",
+            column_config={ibt("hbm_tam"): st.column_config.NumberColumn(format="%.1f"), ibt("mu_hbm_revenue"): st.column_config.NumberColumn(format="%.3f"), ibt("mu_hbm_share"): st.column_config.NumberColumn(format="%.1f%%")},
+        )
+    goldman_score = _render_ib_factor_sliders("goldman")
+
+    st.markdown(f"#### {ibt('ib_weights')}")
+    cols = st.columns(3)
+    bank_weights = [
+        cols[0].number_input(f"{ibt('ubs_weight')}, %", value=40.0, min_value=0.0, step=1.0, key="mu_ib_ubs_weight"),
+        cols[1].number_input(f"{ibt('nomura_weight')}, %", value=30.0, min_value=0.0, step=1.0, key="mu_ib_nomura_weight"),
+        cols[2].number_input(f"{ibt('goldman_weight')}, %", value=30.0, min_value=0.0, step=1.0, key="mu_ib_goldman_weight"),
+    ]
+    combined_score, bank_weight_total = calculate_combined_ib_score(ubs_score, nomura_score, goldman_score, bank_weights)
+    if abs(bank_weight_total - 100.0) > 0.01:
+        st.warning(ibt("weight_warning").format(total=bank_weight_total))
+    if combined_score is None:
+        st.warning(ibt("weight_error"))
+        return
+
+    pe_adjustment = ib_score_to_pe_adjustment(combined_score)
+    adjusted_pe = original_target_pe + pe_adjustment
+    adjusted_target = calculate_target_price(updated_eps, adjusted_pe, coe, discount_years)
+    status = ib_cycle_status(combined_score)
+    cards = st.columns(4)
+    cards[0].metric(ibt("ubs_score"), f"{ubs_score:.1f}")
+    cards[1].metric(ibt("nomura_score"), f"{nomura_score:.1f}")
+    cards[2].metric(ibt("goldman_score"), f"{goldman_score:.1f}")
+    cards[3].metric(ibt("combined_score"), f"{combined_score:.1f}")
+    cards = st.columns(4)
+    cards[0].metric(ibt("cycle_status"), ibt(status))
+    cards[1].metric(ibt("pe_adjustment"), f"{pe_adjustment:+.1f}x")
+    cards[2].metric(ibt("original_pe"), f"{original_target_pe:.1f}x")
+    cards[3].metric(ibt("adjusted_pe"), f"{adjusted_pe:.1f}x")
+    cards = st.columns(4)
+    cards[0].metric(ibt("original_base"), f"${original_base_target:,.2f}")
+    cards[1].metric(ibt("adjusted_target"), f"${adjusted_target:,.2f}")
+    cards[2].metric(ibt("difference"), f"${adjusted_target - original_base_target:+,.2f}")
+    cards[3].metric(ibt("upside"), f"{calculate_surprise(adjusted_target, current_price):+.1%}" if current_price else "N/A")
+    st.info(ibt("explanation_strong" if combined_score >= 80 else "explanation_positive" if combined_score >= 60 else "explanation_neutral" if combined_score >= 40 else "explanation_weak"))
+
+    st.markdown(f"#### {ibt('enhanced')}")
+    st.caption(ibt("enhanced_weights"))
+    cols = st.columns(2)
+    enhanced_weights = [
+        cols[0].number_input(f"{ibt('existing_weight')}, %", value=70.0, min_value=0.0, step=1.0, key="mu_ib_existing_weight"),
+        cols[1].number_input(f"{ibt('adjusted_weight')}, %", value=30.0, min_value=0.0, step=1.0, key="mu_ib_adjusted_weight"),
+    ]
+    enhanced_target, enhanced_weight_total = calculate_ib_enhanced_target(existing_blended_target, adjusted_target, enhanced_weights)
+    if abs(enhanced_weight_total - 100.0) > 0.01 and enhanced_target is not None:
+        st.warning(ibt("enhanced_warning").format(total=enhanced_weight_total))
+    if enhanced_target is None:
+        st.warning(ibt("enhanced_error"))
+        return
+    cards = st.columns(4)
+    cards[0].metric(ibt("existing_blended"), f"${existing_blended_target:,.2f}")
+    cards[1].metric(ibt("adjusted_target"), f"${adjusted_target:,.2f}")
+    cards[2].metric(ibt("enhanced"), f"${enhanced_target:,.2f}")
+    cards[3].metric(ibt("upside"), f"{calculate_surprise(enhanced_target, current_price):+.1%}" if current_price else "N/A")
 
 
 def render_mu_analyst_tracker(current_price, base_target):
@@ -1479,12 +1704,12 @@ def render_mu_analyst_tracker(current_price, base_target):
     )
     if metrics is None:
         st.warning(mt("analyst_no_targets"))
-        return
+        return None
     if abs(metrics["weight_total"] - 100.0) > 0.01:
         st.warning(mt("analyst_weight_warning").format(total=metrics["weight_total"]))
     if metrics["weighted_target"] is None:
         st.warning(mt("analyst_weight_error"))
-        return
+        return None
 
     cards = st.columns(4)
     cards[0].metric(mt("simple_average_target"), f"${metrics['simple_average']:,.2f}")
@@ -1522,6 +1747,7 @@ def render_mu_analyst_tracker(current_price, base_target):
         st.warning(mt("blend_weight_error"))
     else:
         st.metric(mt("blended_target"), f"${blended_target:,.2f}", f"{calculate_surprise(blended_target, current_price):+.1%}")
+    return blended_target
 
 
 def render_mu_valuation_model(snapshots):
@@ -1649,7 +1875,16 @@ def render_mu_valuation_model(snapshots):
     original_base_target = calculate_target_price(baseline["C2029"]["eps"], baseline["C2029"]["base_pe"], baseline["C2029"]["coe"], baseline["C2029"]["discount_years"])
     st.write(mt("increased" if base_target >= original_base_target else "decreased").format(regime=mr(regime)))
 
-    render_mu_analyst_tracker(current_price, base_target)
+    existing_blended_target = render_mu_analyst_tracker(current_price, base_target)
+    render_mu_investment_bank_overlay(
+        revisions["C2029E EPS"],
+        target_pe,
+        base_target,
+        current_price,
+        baseline["C2029"]["coe"],
+        baseline["C2029"]["discount_years"],
+        existing_blended_target,
+    )
 
     st.subheader(mt("dcf"))
     st.warning(mt("dcf_note"))
