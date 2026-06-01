@@ -1233,6 +1233,17 @@ MU_TEXT = {
         "method": "All calculations use editable stored assumptions and manually entered values. No proprietary research text is retrieved or displayed.",
         "increased": "Target price increased because actual results improved the UBS-style baseline comparison and the Nomura-style industry overlay is {regime}.",
         "decreased": "Target price decreased because actual results weakened the UBS-style baseline comparison or the Nomura-style industry overlay is {regime}.",
+        "analyst_tracker": "Analyst Target Price Tracker", "analyst_tracker_note": "Enter analyst targets manually. This tracker does not scrape or retrieve analyst reports, including paywalled reports.",
+        "institution": "Institution", "old_target": "Old Target", "new_target": "New Target", "rating": "Rating", "credibility_weight": "Credibility Weight", "date": "Date", "notes": "Notes",
+        "analyst_no_targets": "Enter at least one positive analyst target price to calculate tracker outputs.", "analyst_weight_warning": "Credibility weights total {total:.1f}%. Calculations automatically normalize the entered weights to 100%.",
+        "analyst_weight_error": "Enter at least one positive credibility weight to calculate the weighted target.", "simple_average_target": "Simple Average Target", "weighted_target": "Weighted Target", "conservative_target": "Conservative Target",
+        "median_target": "Median Target", "highest_target": "Highest Target", "lowest_target": "Lowest Target", "bullish_target": "Bullish Average", "target_range": "Target Price Range",
+        "analyst_upside": "Upside/Downside vs Current Price", "target_comparison": "Target Price Comparison", "model_base_target": "Model-implied Base Target Price", "analyst_weighted_target": "Analyst Weighted Target Price",
+        "analyst_conservative_target": "Analyst Conservative Target Price", "blended_target": "Final Blended Target", "blend_weights": "Editable blended-target weights",
+        "model_weight": "MU Model Base Target Weight", "analyst_weighted_weight": "Analyst Weighted Target Weight", "analyst_conservative_weight": "Analyst Conservative Target Weight",
+        "blend_weight_warning": "Blended-target weights total {total:.1f}%. Calculations automatically normalize the entered weights to 100%.",
+        "blend_weight_error": "Enter at least one positive blended-target weight to calculate the final blended target.",
+        "model_more_bullish": "The internal model is more bullish than analyst consensus.", "model_more_conservative": "The internal model is more conservative than analyst consensus.", "model_aligned": "The internal model is broadly aligned with analyst consensus.",
     },
     "\u4e2d\u6587": {
         "tab": "\u7f8e\u5149\u4f30\u503c\u6a21\u578b", "title": "MU Memory Re-rating Valuation Model", "overview": "\u6a21\u578b\u6982\u89c8",
@@ -1248,6 +1259,17 @@ MU_TEXT = {
         "output": "\u76ee\u6807\u4ef7\u8f93\u51fa", "bear": "\u60b2\u89c2\u76ee\u6807\u4ef7", "base": "\u57fa\u51c6\u76ee\u6807\u4ef7", "bull": "\u4e50\u89c2\u76ee\u6807\u4ef7", "upside": "\u76f8\u5bf9\u5f53\u524d\u4ef7\u683c\u7684\u4e0a\u6da8 / \u4e0b\u8dcc\u7a7a\u95f4", "market_cap": "\u9690\u542b\u5e02\u503c", "net_cash": "\u51c0\u73b0\u91d1", "apply_net_cash": "\u5c06\u6bcf\u80a1\u51c0\u73b0\u91d1\u52a0\u5165 P/E \u76ee\u6807\u4ef7", "explanation": "\u76ee\u6807\u4ef7\u53d8\u5316\u8bf4\u660e",
         "dcf": "DCF \u4ea4\u53c9\u9a8c\u8bc1", "dcf_note": "DCF \u5bf9 WACC \u548c\u7ec8\u503c\u589e\u957f\u7387\u9ad8\u5ea6\u654f\u611f\u3002", "wacc": "WACC", "terminal_growth": "\u7ec8\u503c\u589e\u957f\u7387", "dcf_value": "DCF \u6bcf\u80a1\u516c\u5141\u4ef7\u503c", "dcf_diff": "\u4e0e P/E \u57fa\u51c6\u76ee\u6807\u4ef7\u7684\u5dee\u5f02", "sensitivity": "\u654f\u611f\u6027\u5206\u6790", "dcf_error": "WACC \u5fc5\u987b\u9ad8\u4e8e\u7ec8\u503c\u589e\u957f\u7387\u3002\u65e0\u6cd5\u8ba1\u7b97 DCF\u3002", "summary": "\u5047\u8bbe\u6c47\u603b", "method": "\u6240\u6709\u8ba1\u7b97\u4ec5\u4f7f\u7528\u53ef\u7f16\u8f91\u7684\u5df2\u5b58\u5047\u8bbe\u548c\u624b\u52a8\u8f93\u5165\u503c\u3002\u4e0d\u83b7\u53d6\u6216\u663e\u793a\u4e13\u6709\u7814\u7a76\u6587\u672c\u3002",
         "increased": "\u76ee\u6807\u4ef7\u4e0a\u5347\uff0c\u56e0\u4e3a\u5b9e\u9645\u7ed3\u679c\u6539\u5584\u4e86 UBS \u98ce\u683c\u57fa\u51c6\u5bf9\u6bd4\uff0c\u4e14\u91ce\u6751\u98ce\u683c\u884c\u4e1a overlay \u5904\u4e8e {regime} \u72b6\u6001\u3002", "decreased": "\u76ee\u6807\u4ef7\u4e0b\u964d\uff0c\u56e0\u4e3a\u5b9e\u9645\u7ed3\u679c\u524a\u5f31\u4e86 UBS \u98ce\u683c\u57fa\u51c6\u5bf9\u6bd4\uff0c\u6216\u91ce\u6751\u98ce\u683c\u884c\u4e1a overlay \u5904\u4e8e {regime} \u72b6\u6001\u3002",
+        "analyst_tracker": "\u673a\u6784\u76ee\u6807\u4ef7\u8ffd\u8e2a", "analyst_tracker_note": "\u8bf7\u624b\u52a8\u8f93\u5165\u673a\u6784\u76ee\u6807\u4ef7\u3002\u672c\u8ffd\u8e2a\u5668\u4e0d\u6293\u53d6\u6216\u83b7\u53d6\u4efb\u4f55\u5206\u6790\u5e08\u62a5\u544a\uff0c\u5305\u62ec\u4ed8\u8d39\u62a5\u544a\u3002",
+        "institution": "\u673a\u6784", "old_target": "\u65e7\u76ee\u6807\u4ef7", "new_target": "\u65b0\u76ee\u6807\u4ef7", "rating": "\u8bc4\u7ea7", "credibility_weight": "\u53ef\u4fe1\u5ea6\u6743\u91cd", "date": "\u65e5\u671f", "notes": "\u5907\u6ce8",
+        "analyst_no_targets": "\u8bf7\u81f3\u5c11\u8f93\u5165\u4e00\u4e2a\u6b63\u6570\u673a\u6784\u76ee\u6807\u4ef7\u4ee5\u8ba1\u7b97\u8ffd\u8e2a\u7ed3\u679c\u3002", "analyst_weight_warning": "\u53ef\u4fe1\u5ea6\u6743\u91cd\u5408\u8ba1\u4e3a {total:.1f}%\u3002\u8ba1\u7b97\u65f6\u5df2\u81ea\u52a8\u5f52\u4e00\u5316\u4e3a 100%\u3002",
+        "analyst_weight_error": "\u8bf7\u81f3\u5c11\u8f93\u5165\u4e00\u4e2a\u6b63\u6570\u53ef\u4fe1\u5ea6\u6743\u91cd\u4ee5\u8ba1\u7b97\u52a0\u6743\u76ee\u6807\u4ef7\u3002", "simple_average_target": "\u7b80\u5355\u5e73\u5747\u76ee\u6807\u4ef7", "weighted_target": "\u52a0\u6743\u76ee\u6807\u4ef7", "conservative_target": "\u4fdd\u5b88\u76ee\u6807\u4ef7",
+        "median_target": "\u4e2d\u4f4d\u6570\u76ee\u6807\u4ef7", "highest_target": "\u6700\u9ad8\u76ee\u6807\u4ef7", "lowest_target": "\u6700\u4f4e\u76ee\u6807\u4ef7", "bullish_target": "\u4e50\u89c2\u5e73\u5747\u76ee\u6807\u4ef7", "target_range": "\u76ee\u6807\u4ef7\u533a\u95f4",
+        "analyst_upside": "\u76f8\u5bf9\u5f53\u524d\u4ef7\u683c\u7684\u4e0a\u6da8/\u4e0b\u8dcc\u7a7a\u95f4", "target_comparison": "\u76ee\u6807\u4ef7\u5bf9\u6bd4", "model_base_target": "\u6a21\u578b\u9690\u542b\u57fa\u51c6\u76ee\u6807\u4ef7", "analyst_weighted_target": "\u673a\u6784\u52a0\u6743\u76ee\u6807\u4ef7",
+        "analyst_conservative_target": "\u673a\u6784\u4fdd\u5b88\u76ee\u6807\u4ef7", "blended_target": "\u6700\u7ec8\u6df7\u5408\u76ee\u6807\u4ef7", "blend_weights": "\u53ef\u7f16\u8f91\u7684\u6df7\u5408\u76ee\u6807\u4ef7\u6743\u91cd",
+        "model_weight": "MU \u6a21\u578b\u57fa\u51c6\u76ee\u6807\u4ef7\u6743\u91cd", "analyst_weighted_weight": "\u673a\u6784\u52a0\u6743\u76ee\u6807\u4ef7\u6743\u91cd", "analyst_conservative_weight": "\u673a\u6784\u4fdd\u5b88\u76ee\u6807\u4ef7\u6743\u91cd",
+        "blend_weight_warning": "\u6df7\u5408\u76ee\u6807\u4ef7\u6743\u91cd\u5408\u8ba1\u4e3a {total:.1f}%\u3002\u8ba1\u7b97\u65f6\u5df2\u81ea\u52a8\u5f52\u4e00\u5316\u4e3a 100%\u3002",
+        "blend_weight_error": "\u8bf7\u81f3\u5c11\u8f93\u5165\u4e00\u4e2a\u6b63\u6570\u6df7\u5408\u76ee\u6807\u4ef7\u6743\u91cd\u4ee5\u8ba1\u7b97\u6700\u7ec8\u6df7\u5408\u76ee\u6807\u4ef7\u3002",
+        "model_more_bullish": "\u5185\u90e8\u6a21\u578b\u6bd4\u673a\u6784\u5171\u8bc6\u66f4\u4e50\u89c2\u3002", "model_more_conservative": "\u5185\u90e8\u6a21\u578b\u6bd4\u673a\u6784\u5171\u8bc6\u66f4\u4fdd\u5b88\u3002", "model_aligned": "\u5185\u90e8\u6a21\u578b\u4e0e\u673a\u6784\u5171\u8bc6\u57fa\u672c\u4e00\u81f4\u3002",
     },
     "Espa\u00f1ol": {
         "tab": "Modelo de valoraci\u00f3n de MU", "title": "MU Memory Re-rating Valuation Model", "overview": "Resumen del modelo",
@@ -1261,6 +1283,17 @@ MU_TEXT = {
         "output": "Resultado de precios objetivo", "bear": "Precio objetivo bajista", "base": "Precio objetivo base", "bull": "Precio objetivo alcista", "upside": "Potencial vs precio actual", "market_cap": "Capitalizaci\u00f3n impl\u00edcita", "net_cash": "Efectivo neto", "apply_net_cash": "A\u00f1adir efectivo neto por acci\u00f3n a los objetivos P/E", "explanation": "Explicaci\u00f3n del cambio del precio objetivo",
         "dcf": "Verificaci\u00f3n DCF", "dcf_note": "El DCF es muy sensible al WACC y al crecimiento terminal.", "wacc": "WACC", "terminal_growth": "Crecimiento terminal", "dcf_value": "Valor razonable DCF por acci\u00f3n", "dcf_diff": "Diferencia vs objetivo base P/E", "sensitivity": "An\u00e1lisis de sensibilidad", "dcf_error": "El WACC debe superar el crecimiento terminal. No se puede calcular el DCF.", "summary": "Resumen de hip\u00f3tesis", "method": "Todos los c\u00e1lculos usan hip\u00f3tesis almacenadas editables y valores introducidos manualmente. No se recupera ni muestra texto de investigaci\u00f3n propietario.",
         "increased": "El precio objetivo aument\u00f3 porque los resultados reales mejoraron la comparaci\u00f3n con la base estilo UBS y la capa sectorial estilo Nomura es {regime}.", "decreased": "El precio objetivo disminuy\u00f3 porque los resultados reales debilitaron la comparaci\u00f3n con la base estilo UBS o la capa sectorial estilo Nomura es {regime}.",
+        "analyst_tracker": "Seguimiento de precios objetivo", "analyst_tracker_note": "Introduzca manualmente los precios objetivo. Este seguimiento no extrae ni recupera informes de analistas, incluidos los informes de pago.",
+        "institution": "Instituci\u00f3n", "old_target": "Objetivo anterior", "new_target": "Objetivo nuevo", "rating": "Recomendaci\u00f3n", "credibility_weight": "Peso de credibilidad", "date": "Fecha", "notes": "Notas",
+        "analyst_no_targets": "Introduzca al menos un precio objetivo positivo para calcular los resultados.", "analyst_weight_warning": "Los pesos de credibilidad suman {total:.1f}%. Los c\u00e1lculos normalizan autom\u00e1ticamente los pesos al 100%.",
+        "analyst_weight_error": "Introduzca al menos un peso de credibilidad positivo para calcular el objetivo ponderado.", "simple_average_target": "Objetivo medio simple", "weighted_target": "Objetivo ponderado", "conservative_target": "Objetivo conservador",
+        "median_target": "Objetivo mediano", "highest_target": "Objetivo m\u00e1ximo", "lowest_target": "Objetivo m\u00ednimo", "bullish_target": "Promedio alcista", "target_range": "Rango de objetivos",
+        "analyst_upside": "Potencial vs precio actual", "target_comparison": "Comparaci\u00f3n de precios objetivo", "model_base_target": "Objetivo base impl\u00edcito del modelo", "analyst_weighted_target": "Objetivo ponderado de analistas",
+        "analyst_conservative_target": "Objetivo conservador de analistas", "blended_target": "Objetivo final combinado", "blend_weights": "Pesos editables del objetivo combinado",
+        "model_weight": "Peso del objetivo base del modelo MU", "analyst_weighted_weight": "Peso del objetivo ponderado de analistas", "analyst_conservative_weight": "Peso del objetivo conservador de analistas",
+        "blend_weight_warning": "Los pesos del objetivo combinado suman {total:.1f}%. Los c\u00e1lculos normalizan autom\u00e1ticamente los pesos al 100%.",
+        "blend_weight_error": "Introduzca al menos un peso positivo para calcular el objetivo final combinado.",
+        "model_more_bullish": "El modelo interno es m\u00e1s alcista que el consenso de analistas.", "model_more_conservative": "El modelo interno es m\u00e1s conservador que el consenso de analistas.", "model_aligned": "El modelo interno est\u00e1 ampliamente alineado con el consenso de analistas.",
     },
 }
 
@@ -1270,6 +1303,14 @@ MU_FACTOR_TEXT = {
     "Espa\u00f1ol": ["Fortaleza del ASP de DRAM", "Fortaleza del ASP de HBM", "Fortaleza del ASP de NAND", "Confianza en LTA", "Fortaleza de demanda de inferencia / IA ag\u00e9ntica", "Restricci\u00f3n de oferta de memoria", "Riesgo de desaceleraci\u00f3n del capex de IA", "Riesgo de retrasos en centros de datos", "Riesgo de cuello de botella energ\u00e9tico", "Riesgo de financiaci\u00f3n a tipos altos", "Riesgo de controles de exportaci\u00f3n / geopol\u00edtico", "Riesgo de correcci\u00f3n del ASP de memoria"],
 }
 MU_FACTOR_DEFAULTS = [1, 2, 1, 1, 2, 1, 0, -1, -1, 0, -1, -1]
+MU_ANALYST_TARGETS = [
+    {"Institution": "Susquehanna", "Old Target": 600.0, "New Target": 1750.0, "Rating": "Buy", "Credibility Weight": 14.0, "Date": "manual", "Notes": "Highest target, reduce overweight risk"},
+    {"Institution": "D.A. Davidson", "Old Target": 1000.0, "New Target": 1500.0, "Rating": "Buy", "Credibility Weight": 15.0, "Date": "manual", "Notes": "Bullish target"},
+    {"Institution": "DBS", "Old Target": 900.0, "New Target": 1200.0, "Rating": "Buy", "Credibility Weight": 10.0, "Date": "manual", "Notes": "Asia perspective"},
+    {"Institution": "Mizuho Securities", "Old Target": 800.0, "New Target": 1150.0, "Rating": "Buy", "Credibility Weight": 18.0, "Date": "manual", "Notes": "Semiconductor coverage"},
+    {"Institution": "Barclays", "Old Target": 675.0, "New Target": 1175.0, "Rating": "Buy", "Credibility Weight": 18.0, "Date": "manual", "Notes": "Global investment bank"},
+    {"Institution": "UBS", "Old Target": 535.0, "New Target": 1625.0, "Rating": "Buy", "Credibility Weight": 25.0, "Date": "manual", "Notes": "Detailed MU LTA/EPS framework"},
+]
 MU_TERM_TEXT = {
     "English": {
         "revenue_usd": "Revenue (USD bn)", "gross_margin": "Gross margin", "operating_margin": "Operating margin", "non_gaap_eps": "Non-GAAP EPS", "fcf_usd": "FCF (USD bn)", "base_pe": "Base P/E", "coe": "COE / discount rate, %", "discount_years": "Discount years", "updated_c2029_eps": "Updated C2029E EPS", "assumption": "Assumption", "value": "Value", "current_mu_price": "Current MU price", "actual_capex_usd": "Actual capex (USD bn)", "net_cash_usd": "Net cash (USD bn)", "diluted_shares_b": "Diluted shares (bn)",
@@ -1352,6 +1393,43 @@ def calculate_target_price(eps, pe, coe, discount_years):
     return eps * pe / ((1 + coe) ** discount_years)
 
 
+def calculate_analyst_target_metrics(targets, weights, current_price):
+    targets = pd.to_numeric(pd.Series(targets), errors="coerce")
+    weights = pd.to_numeric(pd.Series(weights), errors="coerce").fillna(0.0).clip(lower=0.0)
+    valid = targets.notna() & (targets > 0)
+    targets = targets[valid].astype(float)
+    weights = weights[valid].astype(float)
+    if targets.empty:
+        return None
+    weight_total = float(weights.sum())
+    weighted_target = float((targets * weights).sum() / weight_total) if weight_total > 0 else None
+    sorted_targets = targets.sort_values()
+    conservative = float(sorted_targets.iloc[:-1].mean()) if len(sorted_targets) > 1 else float(sorted_targets.iloc[0])
+    bullish = float(sorted_targets.iloc[1:].mean()) if len(sorted_targets) > 1 else float(sorted_targets.iloc[0])
+    simple_average = float(targets.mean())
+    return {
+        "simple_average": simple_average,
+        "median": float(targets.median()),
+        "weighted_target": weighted_target,
+        "conservative": conservative,
+        "bullish": bullish,
+        "min": float(targets.min()),
+        "max": float(targets.max()),
+        "range": f"${targets.min():,.2f} - ${targets.max():,.2f}",
+        "upside": calculate_surprise(weighted_target, current_price) if weighted_target is not None and current_price else None,
+        "weight_total": weight_total,
+    }
+
+
+def calculate_blended_target(model_target, analyst_weighted_target, analyst_conservative_target, weights):
+    weights = pd.to_numeric(pd.Series(weights), errors="coerce").fillna(0.0).clip(lower=0.0)
+    weight_total = float(weights.sum())
+    if weight_total <= 0:
+        return None, weight_total
+    values = pd.Series([model_target, analyst_weighted_target, analyst_conservative_target], dtype=float)
+    return float((values * weights / weight_total).sum()), weight_total
+
+
 def calculate_dcf_value(fcfs, wacc, terminal_growth, net_cash_b, diluted_shares_b):
     if wacc <= terminal_growth or diluted_shares_b <= 0:
         return None
@@ -1373,6 +1451,77 @@ def _baseline_input(label, value, key, percent=False):
     displayed = value * 100 if percent else value
     updated = st.number_input(label, value=float(displayed), step=0.1 if percent else 0.01, key=key)
     return updated / 100 if percent else updated
+
+
+def render_mu_analyst_tracker(current_price, base_target):
+    st.subheader(mt("analyst_tracker"))
+    st.caption(mt("analyst_tracker_note"))
+    analyst_targets = st.data_editor(
+        pd.DataFrame(MU_ANALYST_TARGETS),
+        use_container_width=True,
+        hide_index=True,
+        num_rows="dynamic",
+        key="mu_analyst_targets",
+        column_config={
+            "Institution": st.column_config.TextColumn(mt("institution")),
+            "Old Target": st.column_config.NumberColumn(mt("old_target"), min_value=0.0, step=1.0, format="$%.2f"),
+            "New Target": st.column_config.NumberColumn(mt("new_target"), min_value=0.0, step=1.0, format="$%.2f"),
+            "Rating": st.column_config.TextColumn(mt("rating")),
+            "Credibility Weight": st.column_config.NumberColumn(mt("credibility_weight"), min_value=0.0, step=1.0, format="%.1f%%"),
+            "Date": st.column_config.TextColumn(mt("date")),
+            "Notes": st.column_config.TextColumn(mt("notes")),
+        },
+    )
+    metrics = calculate_analyst_target_metrics(
+        analyst_targets.get("New Target", pd.Series(dtype=float)),
+        analyst_targets.get("Credibility Weight", pd.Series(dtype=float)),
+        current_price,
+    )
+    if metrics is None:
+        st.warning(mt("analyst_no_targets"))
+        return
+    if abs(metrics["weight_total"] - 100.0) > 0.01:
+        st.warning(mt("analyst_weight_warning").format(total=metrics["weight_total"]))
+    if metrics["weighted_target"] is None:
+        st.warning(mt("analyst_weight_error"))
+        return
+
+    cards = st.columns(4)
+    cards[0].metric(mt("simple_average_target"), f"${metrics['simple_average']:,.2f}")
+    cards[1].metric(mt("weighted_target"), f"${metrics['weighted_target']:,.2f}")
+    cards[2].metric(mt("conservative_target"), f"${metrics['conservative']:,.2f}")
+    cards[3].metric(mt("median_target"), f"${metrics['median']:,.2f}")
+    cards = st.columns(4)
+    cards[0].metric(mt("highest_target"), f"${metrics['max']:,.2f}")
+    cards[1].metric(mt("lowest_target"), f"${metrics['min']:,.2f}")
+    cards[2].metric(mt("bullish_target"), f"${metrics['bullish']:,.2f}")
+    cards[3].metric(mt("target_range"), metrics["range"])
+    st.metric(mt("analyst_upside"), f"{metrics['upside']:+.1%}" if metrics["upside"] is not None else "N/A")
+
+    st.markdown(f"#### {mt('target_comparison')}")
+    comparison = pd.DataFrame([
+        {mt("metric"): mt("model_base_target"), mt("share_price"): base_target, mt("upside"): calculate_surprise(base_target, current_price)},
+        {mt("metric"): mt("analyst_weighted_target"), mt("share_price"): metrics["weighted_target"], mt("upside"): calculate_surprise(metrics["weighted_target"], current_price)},
+        {mt("metric"): mt("analyst_conservative_target"), mt("share_price"): metrics["conservative"], mt("upside"): calculate_surprise(metrics["conservative"], current_price)},
+    ])
+    st.dataframe(comparison.style.format({mt("share_price"): "${:,.2f}", mt("upside"): "{:+.1%}"}), use_container_width=True, hide_index=True)
+    analyst_gap = calculate_surprise(base_target, metrics["weighted_target"])
+    st.info(mt("model_aligned" if abs(analyst_gap) <= 0.05 else "model_more_bullish" if analyst_gap > 0 else "model_more_conservative"))
+
+    st.markdown(f"#### {mt('blend_weights')}")
+    cols = st.columns(3)
+    blend_weights = [
+        cols[0].number_input(f"{mt('model_weight')}, %", value=50.0, min_value=0.0, step=1.0, key="mu_blend_model"),
+        cols[1].number_input(f"{mt('analyst_weighted_weight')}, %", value=30.0, min_value=0.0, step=1.0, key="mu_blend_weighted"),
+        cols[2].number_input(f"{mt('analyst_conservative_weight')}, %", value=20.0, min_value=0.0, step=1.0, key="mu_blend_conservative"),
+    ]
+    blended_target, blend_weight_total = calculate_blended_target(base_target, metrics["weighted_target"], metrics["conservative"], blend_weights)
+    if abs(blend_weight_total - 100.0) > 0.01:
+        st.warning(mt("blend_weight_warning").format(total=blend_weight_total))
+    if blended_target is None:
+        st.warning(mt("blend_weight_error"))
+    else:
+        st.metric(mt("blended_target"), f"${blended_target:,.2f}", f"{calculate_surprise(blended_target, current_price):+.1%}")
 
 
 def render_mu_valuation_model(snapshots):
@@ -1499,6 +1648,8 @@ def render_mu_valuation_model(snapshots):
     st.markdown(f"#### {mt('explanation')}")
     original_base_target = calculate_target_price(baseline["C2029"]["eps"], baseline["C2029"]["base_pe"], baseline["C2029"]["coe"], baseline["C2029"]["discount_years"])
     st.write(mt("increased" if base_target >= original_base_target else "decreased").format(regime=mr(regime)))
+
+    render_mu_analyst_tracker(current_price, base_target)
 
     st.subheader(mt("dcf"))
     st.warning(mt("dcf_note"))
