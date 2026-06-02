@@ -2,6 +2,7 @@
 
 from datetime import date, datetime, timedelta
 import hashlib
+import html
 import json
 import os
 import re
@@ -10,6 +11,7 @@ import feedparser
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
+import requests
 from scipy.stats import norm
 import streamlit as st
 import yfinance as yf
@@ -60,7 +62,7 @@ TRANSLATIONS = {
         "dashboard_caption": "Cross-company dashboard | AI infrastructure and growth watchlist",
         "technical_analysis": "Technical Analysis", "options_gex": "Options & GEX",
         "value_investing": "Value Investing", "news_sentiment": "News & Sentiment",
-        "multi_agent_research": "Multi-Agent Research", "data_diagnostics": "Data Diagnostics", "macro": "Macro",
+        "multi_agent_research": "Multi-Agent Research", "macro": "Macro",
         "source": "Source", "price": "Price", "today": "today", "market_cap": "Market cap",
         "revenue": "Revenue", "net_margin": "Net margin", "technical_caption": "Six-month price trend, moving averages, RSI, and volume activity for the complete watchlist.",
         "rsi_signal": "RSI signal", "volume_vs_20d": "Volume vs 20D", "historical_price_source": "Historical price source",
@@ -102,11 +104,15 @@ TRANSLATIONS = {
         "brent_crude_oil": "Brent crude oil", "unemployment": "Unemployment", "gdp_growth_yoy": "GDP growth YoY",
         "no_watchlist_news": "No news available", "no_market_news": "No news available",
         "market_news_caption": "FMP general news filtered for semiconductor, AI, memory, DRAM, NAND, data center, Nvidia, and Micron.",
+        "fmp_news_tab": "FMP News", "yahoo_news_tab": "Yahoo News", "yahoo_news": "Yahoo News",
+        "yahoo_news_caption": "Supplemental Yahoo/yfinance headlines for each tracked stock. Cached for 30 minutes.",
+        "no_yahoo_news": "No Yahoo/yfinance news available", "yahoo_news_unavailable": "Yahoo/yfinance news unavailable",
+        "related_news": "Related News", "related_ticker": "Related ticker",
     },
     "中文": {
         "language": "语言", "dashboard_title": "股票研究终端", "dashboard_caption": "跨公司仪表板 | AI 基础设施与成长股观察列表",
         "technical_analysis": "技术分析", "options_gex": "期权与 GEX", "value_investing": "价值投资", "news_sentiment": "新闻与情绪",
-        "multi_agent_research": "多智能体研究", "data_diagnostics": "数据诊断", "macro": "宏观", "source": "来源", "price": "价格",
+        "multi_agent_research": "多智能体研究", "macro": "宏观", "source": "来源", "price": "价格",
         "today": "今日", "market_cap": "市值", "revenue": "营收", "net_margin": "净利率", "technical_caption": "完整观察列表的六个月价格趋势、移动平均线、RSI 和成交量活动。",
         "rsi_signal": "RSI 信号", "volume_vs_20d": "成交量对比 20 日均值", "historical_price_source": "历史价格来源", "technical_unavailable": "技术数据不可用",
         "overbought": "超买", "oversold": "超卖", "neutral": "中性", "options_caption": "每只跟踪股票的伽马敞口和期权仓位均独立计算。",
@@ -137,11 +143,15 @@ TRANSLATIONS = {
         "economic_calendar_unavailable": "经济日历不可用。", "historical_data_unavailable": "历史数据不可用", "cpi_index": "CPI 指数", "us_10y_treasury_yield": "美国 10 年期国债收益率",
         "brent_crude_oil": "布伦特原油", "unemployment": "失业率", "gdp_growth_yoy": "GDP 同比增长", "no_watchlist_news": "暂无新闻", "no_market_news": "暂无新闻",
         "market_news_caption": "筛选 FMP 综合新闻中的半导体、AI、内存、DRAM、NAND、数据中心、Nvidia 和 Micron 相关内容。",
+        "fmp_news_tab": "FMP 新闻", "yahoo_news_tab": "Yahoo 新闻", "yahoo_news": "相关新闻",
+        "yahoo_news_caption": "每只跟踪股票的 Yahoo/yfinance 补充新闻，缓存 30 分钟。",
+        "no_yahoo_news": "暂无 Yahoo/yfinance 新闻", "yahoo_news_unavailable": "Yahoo/yfinance 新闻不可用",
+        "related_news": "相关新闻", "related_ticker": "相关 ticker",
     },
     "Español": {
         "language": "Idioma", "dashboard_title": "Terminal de análisis bursátil", "dashboard_caption": "Panel comparativo | Infraestructura de IA y lista de seguimiento de crecimiento",
         "technical_analysis": "Análisis técnico", "options_gex": "Opciones y GEX", "value_investing": "Inversión en valor", "news_sentiment": "Noticias y sentimiento",
-        "multi_agent_research": "Análisis multiagente", "data_diagnostics": "Diagnóstico de datos", "macro": "Macro", "source": "Fuente", "price": "Precio",
+        "multi_agent_research": "Análisis multiagente", "macro": "Macro", "source": "Fuente", "price": "Precio",
         "today": "hoy", "market_cap": "Capitalización", "revenue": "Ingresos", "net_margin": "Margen neto", "technical_caption": "Tendencia de precios de seis meses, medias móviles, RSI y volumen para toda la lista.",
         "rsi_signal": "Señal RSI", "volume_vs_20d": "Volumen vs. 20 días", "historical_price_source": "Fuente de precios históricos", "technical_unavailable": "datos técnicos no disponibles",
         "overbought": "Sobrecompra", "oversold": "Sobreventa", "neutral": "Neutral", "options_caption": "La exposición gamma y el posicionamiento de opciones se calculan por separado para cada acción.",
@@ -172,6 +182,10 @@ TRANSLATIONS = {
         "economic_calendar_unavailable": "Calendario económico no disponible.", "historical_data_unavailable": "datos históricos no disponibles", "cpi_index": "Índice IPC", "us_10y_treasury_yield": "Rendimiento del Tesoro de EE. UU. a 10 años",
         "brent_crude_oil": "Petróleo Brent", "unemployment": "Desempleo", "gdp_growth_yoy": "Crecimiento interanual del PIB", "no_watchlist_news": "No hay noticias disponibles", "no_market_news": "No hay noticias disponibles",
         "market_news_caption": "Noticias generales de FMP filtradas por semiconductores, IA, memoria, DRAM, NAND, centros de datos, Nvidia y Micron.",
+        "fmp_news_tab": "Noticias FMP", "yahoo_news_tab": "Yahoo News", "yahoo_news": "Noticias relacionadas",
+        "yahoo_news_caption": "Titulares complementarios de Yahoo/yfinance para cada acción seguida. Caché de 30 minutos.",
+        "no_yahoo_news": "No hay noticias de Yahoo/yfinance disponibles", "yahoo_news_unavailable": "Noticias de Yahoo/yfinance no disponibles",
+        "related_news": "Noticias relacionadas", "related_ticker": "Ticker relacionado",
     },
 }
 
@@ -482,6 +496,85 @@ def get_cached_market_news(limit=150):
     return fetch_general_news(limit)
 
 
+def _format_yfinance_datetime(value):
+    if not value:
+        return None
+    if isinstance(value, (int, float)):
+        return datetime.utcfromtimestamp(value).isoformat(timespec="seconds") + "Z"
+    return str(value)
+
+
+def _extract_yfinance_url(item, content):
+    canonical_url = content.get("canonicalUrl") if isinstance(content, dict) else None
+    click_url = content.get("clickThroughUrl") if isinstance(content, dict) else None
+    if isinstance(canonical_url, dict) and canonical_url.get("url"):
+        return canonical_url.get("url")
+    if isinstance(click_url, dict) and click_url.get("url"):
+        return click_url.get("url")
+    return item.get("link") or item.get("url")
+
+
+def _normalize_yfinance_news_item(item, ticker):
+    if not isinstance(item, dict):
+        return None
+    content = item.get("content") if isinstance(item.get("content"), dict) else {}
+    provider = content.get("provider") if isinstance(content.get("provider"), dict) else {}
+    title = content.get("title") or item.get("title")
+    if not title:
+        return None
+    related_tickers = content.get("finance") or item.get("relatedTickers") or item.get("tickers") or [ticker]
+    if isinstance(related_tickers, dict):
+        related_tickers = related_tickers.get("stockTickers") or related_tickers.get("tickers") or [ticker]
+    if not isinstance(related_tickers, (list, tuple)):
+        related_tickers = [ticker]
+    related_tickers = [str(symbol).upper() for symbol in related_tickers if symbol]
+    if ticker not in related_tickers:
+        related_tickers.insert(0, ticker)
+    return {
+        "title": title,
+        "text": content.get("summary") or item.get("summary") or "",
+        "published_date": _format_yfinance_datetime(
+            content.get("pubDate") or item.get("providerPublishTime") or item.get("published")
+        ),
+        "url": _extract_yfinance_url(item, content),
+        "publisher": provider.get("displayName") or content.get("providerName") or item.get("publisher"),
+        "source": "Yahoo/yfinance",
+        "ticker": ticker,
+        "related_tickers": ", ".join(dict.fromkeys(related_tickers)),
+    }
+
+
+@st.cache_data(ttl=1800)
+def get_cached_yahoo_news(ticker, limit=10):
+    ticker = ticker.upper()
+    stock = yf.Ticker(ticker)
+    raw_news = []
+    try:
+        raw_news = stock.get_news(count=limit) or []
+    except TypeError:
+        raw_news = stock.get_news() or []
+    except Exception:
+        raw_news = stock.news or []
+    if not raw_news:
+        try:
+            raw_news = stock.news or []
+        except Exception:
+            raw_news = []
+    normalized = []
+    for item in raw_news:
+        normalized_item = _normalize_yfinance_news_item(item, ticker)
+        if normalized_item:
+            normalized.append(normalized_item)
+        if len(normalized) >= limit:
+            break
+    return normalized
+
+
+@st.cache_data(ttl=1800)
+def get_cached_watchlist_yahoo_news(tickers, limit_per_ticker=10):
+    return {ticker: get_cached_yahoo_news(ticker, limit_per_ticker) for ticker in tickers}
+
+
 def classify_news_sentiment(item):
     text = f"{item.get('title') or ''} {item.get('text') or ''}".lower()
     positive_score = sum(_contains_news_keyword(text, keyword) for keyword in POSITIVE_NEWS_KEYWORDS)
@@ -510,11 +603,87 @@ NEWS_SUMMARY_LABELS = {
     "\u4e2d\u6587": "AI \u603b\u7ed3",
     "Espa\u00f1ol": "Resumen de IA",
 }
-AI_SUMMARY_VERSION = "v2"
+AI_SUMMARY_VERSION = "v3"
+AI_TRANSLATION_VERSION = "v1"
+AI_SENTIMENT_VERSION = "v1"
+AI_DETAILED_SUMMARY_VERSION = "v1"
+NEWS_TRANSLATION_LABELS = {
+    "English": "Full Translation",
+    "\u4e2d\u6587": "\u5168\u6587\u7ffb\u8bd1",
+    "Espa\u00f1ol": "Traducci\u00f3n completa",
+}
+NEWS_TRANSLATION_UI = {
+    "English": ("Generate translation", "Regenerate translation", "Generate this translation on demand to limit AI calls."),
+    "\u4e2d\u6587": ("\u751f\u6210\u7ffb\u8bd1", "\u91cd\u65b0\u751f\u6210\u7ffb\u8bd1", "\u6309\u9700\u751f\u6210\u6b64\u7ffb\u8bd1\uff0c\u4ee5\u51cf\u5c11 AI \u8c03\u7528\u3002"),
+    "Espa\u00f1ol": ("Generar traducci\u00f3n", "Regenerar traducci\u00f3n", "Genere esta traducci\u00f3n bajo demanda para limitar las llamadas de IA."),
+}
+NEWS_DETAILED_SUMMARY_LABELS = {
+    "English": "ChatGPT Detailed Summary",
+    "\u4e2d\u6587": "ChatGPT \u8be6\u7ec6\u603b\u7ed3",
+    "Espa\u00f1ol": "Resumen detallado de ChatGPT",
+}
+NEWS_DETAILED_SUMMARY_UI = {
+    "English": ("Generate detailed summary", "Regenerate detailed summary", "Generate this detailed summary on demand to limit AI calls."),
+    "\u4e2d\u6587": ("\u751f\u6210\u8be6\u7ec6\u603b\u7ed3", "\u91cd\u65b0\u751f\u6210\u8be6\u7ec6\u603b\u7ed3", "\u6309\u9700\u751f\u6210\u6b64\u8be6\u7ec6\u603b\u7ed3\uff0c\u4ee5\u51cf\u5c11 AI \u8c03\u7528\u3002"),
+    "Espa\u00f1ol": ("Generar resumen detallado", "Regenerar resumen detallado", "Genere este resumen detallado bajo demanda para limitar las llamadas de IA."),
+}
+NEWS_DETAILED_SUMMARY_UNAVAILABLE = {
+    "English": "Detailed summary is temporarily unavailable.",
+    "\u4e2d\u6587": "\u6682\u65f6\u65e0\u6cd5\u751f\u6210\u8be6\u7ec6\u603b\u7ed3\u3002",
+    "Espa\u00f1ol": "El resumen detallado no est\u00e1 disponible temporalmente.",
+}
+NEWS_SCORE_LABELS = {
+    "English": {
+        "credibility": "Credibility",
+        "sentiment": "Sentiment",
+        "credibility_bands": ((80, "High"), (60, "Medium-High"), (40, "Medium"), (0, "Low")),
+        "sentiment_bands": (
+            (0.35, "Bullish"),
+            (0.10, "Slightly Bullish"),
+            (-0.10, "Neutral"),
+            (-0.35, "Slightly Bearish"),
+            (-1.01, "Bearish"),
+        ),
+    },
+    "\u4e2d\u6587": {
+        "credibility": "\u53ef\u4fe1\u5ea6",
+        "sentiment": "\u60c5\u7eea",
+        "credibility_bands": ((80, "\u9ad8"), (60, "\u4e2d\u9ad8"), (40, "\u4e2d"), (0, "\u4f4e")),
+        "sentiment_bands": (
+            (0.35, "\u504f\u591a"),
+            (0.10, "\u8f7b\u5fae\u504f\u591a"),
+            (-0.10, "\u4e2d\u6027"),
+            (-0.35, "\u8f7b\u5fae\u504f\u7a7a"),
+            (-1.01, "\u504f\u7a7a"),
+        ),
+    },
+    "Espa\u00f1ol": {
+        "credibility": "Credibilidad",
+        "sentiment": "Sentimiento",
+        "credibility_bands": ((80, "Alta"), (60, "Media-alta"), (40, "Media"), (0, "Baja")),
+        "sentiment_bands": (
+            (0.35, "Alcista"),
+            (0.10, "Ligeramente alcista"),
+            (-0.10, "Neutral"),
+            (-0.35, "Ligeramente bajista"),
+            (-1.01, "Bajista"),
+        ),
+    },
+}
 NEWS_SUMMARY_LANGUAGE_NAMES = {
     "English": "English",
     "\u4e2d\u6587": "Chinese",
     "Espa\u00f1ol": "Spanish",
+}
+NEWS_SUMMARY_LANGUAGE_ALIASES = {
+    "en": "English",
+    "english": "English",
+    "zh": "\u4e2d\u6587",
+    "chinese": "\u4e2d\u6587",
+    "\u4e2d\u6587": "\u4e2d\u6587",
+    "es": "Espa\u00f1ol",
+    "spanish": "Espa\u00f1ol",
+    "espa\u00f1ol": "Espa\u00f1ol",
 }
 NEWS_SUMMARY_FIELD_LABELS = {
     "English": {
@@ -554,7 +723,436 @@ NEWS_DRIVER_KEYWORDS = (
 
 
 def _news_summary_language(language):
-    return language if language in NEWS_SUMMARY_LABELS else "English"
+    if language in NEWS_SUMMARY_LABELS:
+        return language
+    return NEWS_SUMMARY_LANGUAGE_ALIASES.get(str(language or "").strip().lower(), "English")
+
+
+def _news_summary_language_instruction(language):
+    language = _news_summary_language(language)
+    if language == "\u4e2d\u6587":
+        return (
+            "\u8bf7\u5b8c\u5168\u4f7f\u7528\u5f53\u524d\u9009\u62e9\u7684\u8bed\u8a00\u8f93\u51fa\uff0c\u4e0d\u8981\u6df7\u7528\u82f1\u6587\u3002"
+            "\u5373\u4f7f\u65b0\u95fb\u539f\u6587\u662f\u82f1\u6587\uff0c\u4e5f\u8981\u7ffb\u8bd1\u5e76\u603b\u7ed3\u4e3a\u5f53\u524d\u8bed\u8a00\u3002"
+            "\u9664\u65b0\u95fb\u6807\u9898\u3001\u516c\u53f8\u540d\u79f0\u3001ticker\u3001\u6765\u6e90\u548c URL \u5916\uff0cJSON \u6240\u6709\u5b57\u6bb5\u503c\u5fc5\u987b\u662f\u4e2d\u6587\uff1b"
+            "\u79ef\u6781\u56e0\u7d20\u3001\u98ce\u9669\u56e0\u7d20\u3001\u540e\u7eed\u5173\u6ce8\u7684 bullet point \u4e5f\u5fc5\u987b\u662f\u4e2d\u6587\u3002"
+            "\u4f7f\u7528\u4e2d\u6587\u8868\u8fbe AI \u89c2\u70b9\u548c\u7f6e\u4fe1\u5ea6\uff0c\u4f8b\u5982\u770b\u6da8\u3001\u4e2d\u6027\u3001\u770b\u8dcc\u3001\u4f4e\u3001\u4e2d\u3001\u9ad8\u3002"
+        )
+    if language == "Espa\u00f1ol":
+        return (
+            "Use only Spanish for every JSON field value. Do not mix in English sentences. "
+            "Even if the source news is in English, translate and summarize it in Spanish. "
+            "Article titles, company names, tickers, sources, and URLs may remain as supplied. "
+            "Use Spanish labels for ai_view and confidence, such as Alcista, Neutral, Bajista, Baja, Media, Alta."
+        )
+    return (
+        "Use only English for every JSON field value. Article titles, company names, tickers, "
+        "sources, and URLs may remain as supplied. Use English labels for ai_view and confidence."
+    )
+
+
+def _news_summary_label_text(labels, field, language):
+    separator = "\uff1a" if _news_summary_language(language) == "\u4e2d\u6587" else ":"
+    return f"{labels[field]}{separator}"
+
+
+def _clean_extracted_article_text(text, max_chars=9000):
+    text = html.unescape(str(text or ""))
+    text = re.sub(r"\s+", " ", text).strip()
+    blocked_phrases = (
+        "subscribe to continue", "sign in to continue", "already a subscriber",
+        "enable javascript", "cookie policy", "advertisement",
+    )
+    if not text or any(phrase in text.lower() for phrase in blocked_phrases):
+        return ""
+    return text[:max_chars]
+
+
+def _extract_article_text_from_html(page_html):
+    if not page_html:
+        return ""
+    page_html = re.sub(r"(?is)<(script|style|noscript|svg|iframe).*?</\1>", " ", page_html)
+    candidates = []
+    for tag in ("article", "main"):
+        for match in re.finditer(rf"(?is)<{tag}\b[^>]*>(.*?)</{tag}>", page_html):
+            candidates.append(match.group(1))
+    paragraphs = re.findall(r"(?is)<p\b[^>]*>(.*?)</p>", "\n".join(candidates) or page_html)
+    if paragraphs:
+        text = "\n\n".join(re.sub(r"(?is)<[^>]+>", " ", paragraph) for paragraph in paragraphs)
+    else:
+        text = re.sub(r"(?is)<[^>]+>", " ", "\n".join(candidates) or page_html)
+    return _clean_extracted_article_text(text)
+
+
+@st.cache_data(ttl=6 * 60 * 60)
+def get_cached_yahoo_article_text(url):
+    if not url:
+        return ""
+    try:
+        response = requests.get(
+            url,
+            timeout=8,
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36"
+                )
+            },
+        )
+        if response.status_code >= 400:
+            return ""
+        return _extract_article_text_from_html(response.text)
+    except Exception:
+        return ""
+
+
+def _yahoo_news_source_text(item):
+    article_text = get_cached_yahoo_article_text(item.get("url"))
+    fallback_text = "\n\n".join(
+        value for value in (item.get("title") or "", item.get("text") or "") if value
+    )
+    return article_text or fallback_text
+
+
+def _parse_news_datetime(value):
+    if not value:
+        return None
+    if isinstance(value, (int, float)):
+        return datetime.utcfromtimestamp(value)
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        return parsed.replace(tzinfo=None)
+    except Exception:
+        return None
+
+
+def _credibility_label(score, language):
+    labels = NEWS_SCORE_LABELS[_news_summary_language(language)]["credibility_bands"]
+    for threshold, label in labels:
+        if score >= threshold:
+            return label
+    return labels[-1][1]
+
+
+def _sentiment_label(score, language):
+    labels = NEWS_SCORE_LABELS[_news_summary_language(language)]["sentiment_bands"]
+    for threshold, label in labels:
+        if score >= threshold:
+            return label
+    return labels[-1][1]
+
+
+def _format_yahoo_scores(credibility_score, sentiment_score, language):
+    language = _news_summary_language(language)
+    labels = NEWS_SCORE_LABELS[language]
+    separator = "\uff1a" if language == "\u4e2d\u6587" else ":"
+    sentiment_score = max(-1.0, min(1.0, float(sentiment_score or 0)))
+    credibility_score = max(0, min(100, int(round(credibility_score or 0))))
+    return (
+        f"{labels['credibility']}{separator} {credibility_score}/100 {_credibility_label(credibility_score, language)}",
+        f"{labels['sentiment']}{separator} {sentiment_score:+.2f} {_sentiment_label(sentiment_score, language)}",
+    )
+
+
+def _rule_based_yahoo_credibility_score(ticker, title, url, summary, publisher, published_date, article_text):
+    score = 30
+    if publisher:
+        score += 15
+    if url:
+        score += 10
+    if summary:
+        score += 10
+    if article_text:
+        score += 20
+    if ticker and title:
+        score += 5
+    published_at = _parse_news_datetime(published_date)
+    if published_at:
+        age_days = max(0, (datetime.utcnow() - published_at).days)
+        if age_days <= 2:
+            score += 10
+        elif age_days <= 14:
+            score += 6
+        elif age_days <= 45:
+            score += 3
+    else:
+        score -= 5
+    return max(0, min(100, score))
+
+
+def _rule_based_yahoo_sentiment_score(text):
+    text = str(text or "").lower()
+    positive_score = sum(_contains_news_keyword(text, keyword) for keyword in POSITIVE_NEWS_KEYWORDS)
+    negative_score = sum(_contains_news_keyword(text, keyword) for keyword in NEGATIVE_NEWS_KEYWORDS)
+    raw_score = (positive_score - negative_score) * 0.18
+    return max(-0.55, min(0.55, raw_score))
+
+
+@st.cache_data(ttl=7 * 24 * 60 * 60)
+def get_cached_yahoo_news_scores(ticker, title, url, summary, language, sentiment_version, publisher, published_date, article_text):
+    article_text = _clean_extracted_article_text(article_text, max_chars=9000)
+    credibility_score = _rule_based_yahoo_credibility_score(
+        ticker, title, url, summary, publisher, published_date, article_text
+    )
+    source_text = "\n\n".join(value for value in (title or "", summary or "", article_text or "") if value)
+    fallback = {
+        "credibility_score": credibility_score,
+        "sentiment_score": 0.0,
+    }
+    if not source_text:
+        return fallback
+    try:
+        client = get_openai_client()
+    except Exception:
+        return fallback
+
+    language = _news_summary_language(language)
+    prompt = (
+        "Score this Yahoo/yfinance stock news item for directional sentiment toward the supplied ticker. "
+        "Use only the title, summary, and article text below. Return JSON only with key sentiment_score. "
+        "sentiment_score must be a number from -1 to 1, where +1 is strongly bullish, 0 is neutral, "
+        "and -1 is strongly bearish. Do not summarize or translate the article.\n\n"
+        f"Ticker: {ticker or ''}\nTitle: {title or ''}\nURL: {url or ''}\n"
+        f"Language: {NEWS_SUMMARY_LANGUAGE_NAMES[language]}\nSentiment version: {sentiment_version}\n\n"
+        f"Content:\n{source_text[:9000]}"
+    )
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"},
+        )
+        result = json.loads(response.choices[0].message.content)
+        sentiment_score = max(-1.0, min(1.0, float(result.get("sentiment_score", 0))))
+        return {
+            "credibility_score": credibility_score,
+            "sentiment_score": sentiment_score,
+        }
+    except Exception:
+        return fallback
+
+
+@st.cache_data(ttl=7 * 24 * 60 * 60)
+def get_cached_ai_news_translation(ticker, title, url, language, translation_version, source_text, refresh_nonce=0):
+    source_text = _clean_extracted_article_text(source_text, max_chars=12000)
+    if not source_text:
+        return "", None
+    language = _news_summary_language(language)
+    if language == "English":
+        return source_text, None
+    try:
+        client = get_openai_client()
+    except Exception as exc:
+        return source_text, f"AI translation unavailable; showing source text: {exc}"
+    target_language = NEWS_SUMMARY_LANGUAGE_NAMES[language]
+    prompt = (
+        f"Translate the supplied Yahoo/yfinance news content into {target_language}. "
+        "Do not summarize, analyze, add investment opinions, classify sentiment, or use bullish/bearish/neutral labels. "
+        "Keep company names, tickers, source names, URLs, and article titles as supplied when appropriate. "
+        "Return only the translated article text in plain paragraphs. "
+        "If the input contains only a title and source summary, translate that title and summary fully.\n\n"
+        f"Ticker: {ticker or ''}\nTitle: {title or ''}\nURL: {url or ''}\n"
+        f"Translation cache version: {translation_version}\n\nSource content:\n{source_text}"
+    )
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+        )
+        translated = (response.choices[0].message.content or "").strip()
+        if not translated:
+            raise ValueError("AI translation response was empty")
+        return translated, None
+    except Exception as exc:
+        return source_text, f"AI translation unavailable; showing source text: {exc}"
+
+
+def render_yahoo_news_translation(item):
+    language = _news_summary_language(st.session_state.get("language", "English"))
+    with st.expander(NEWS_TRANSLATION_LABELS[language], expanded=False):
+        try:
+            translation_key = hashlib.sha256(json.dumps(
+                [
+                    item.get("ticker") or "",
+                    item.get("title") or "",
+                    item.get("url") or "",
+                    language,
+                    AI_TRANSLATION_VERSION,
+                ],
+                ensure_ascii=True,
+            ).encode("utf-8")).hexdigest()
+            requested_key = f"news_translation_requested_{translation_key}"
+            button_label, refresh_label, idle_caption = NEWS_TRANSLATION_UI[language]
+            if st.button(button_label, key=f"generate_news_translation_{translation_key}"):
+                st.session_state[requested_key] = True
+            if not st.session_state.get(requested_key):
+                st.caption(idle_caption)
+                return
+            source_text = _yahoo_news_source_text(item)
+            translation, warning = get_cached_ai_news_translation(
+                item.get("ticker") or "",
+                item.get("title") or "",
+                item.get("url") or "",
+                language,
+                AI_TRANSLATION_VERSION,
+                source_text,
+                st.session_state.get(f"news_translation_refresh_{translation_key}", 0),
+            )
+            if warning:
+                st.warning(warning)
+            if translation:
+                st.write(translation)
+            else:
+                st.info(item.get("text") or item.get("title") or t("no_yahoo_news"))
+            if st.button(refresh_label, key=f"refresh_news_translation_{translation_key}"):
+                refresh_key = f"news_translation_refresh_{translation_key}"
+                st.session_state[refresh_key] = st.session_state.get(refresh_key, 0) + 1
+                st.rerun()
+        except Exception as exc:
+            st.warning(f"AI translation unavailable: {exc}")
+
+
+def _yahoo_translation_key(item, language):
+    return hashlib.sha256(json.dumps(
+        [
+            item.get("ticker") or "",
+            item.get("title") or "",
+            item.get("url") or "",
+            language,
+            AI_TRANSLATION_VERSION,
+        ],
+        ensure_ascii=True,
+    ).encode("utf-8")).hexdigest()
+
+
+def _detailed_summary_language_instruction(language):
+    language = _news_summary_language(language)
+    if language == "\u4e2d\u6587":
+        return (
+            "\u4f60\u5fc5\u987b\u5b8c\u6574\u4f7f\u7528\u7b80\u4f53\u4e2d\u6587\u8f93\u51fa\uff0c\u4e0d\u8981\u5728\u603b\u7ed3\u6b63\u6587\u4e2d\u6df7\u7528\u82f1\u6587\u3002"
+            "\u65b0\u95fb\u6807\u9898\u3001\u516c\u53f8\u540d\u79f0\u3001ticker\u3001\u6765\u6e90\u548c URL \u53ef\u4ee5\u4fdd\u7559\u82f1\u6587\u3002"
+            "\u6309\u4ee5\u4e0b\u7ed3\u6784\u8f93\u51fa\uff0c\u4fdd\u7559\u8fd9\u4e9b\u4e2d\u6587\u6807\u9898\uff1a\n"
+            "\u8fd9\u7bc7\u6587\u7ae0\u7684\u6838\u5fc3\u610f\u601d\u662f\uff1a\n\n"
+            "[\u7528 2-4 \u53e5\u8bdd\u89e3\u91ca\u6587\u7ae0\u4e3b\u65e8]\n\n"
+            "\u6587\u7ae0\u4e3b\u8981\u5206\u6210\u51e0\u4e2a\u903b\u8f91\uff1a\n\n"
+            "1. [\u7b2c\u4e00\u90e8\u5206\u6807\u9898]\n[\u8be6\u7ec6\u89e3\u91ca]\n\n"
+            "2. [\u7b2c\u4e8c\u90e8\u5206\u6807\u9898]\n[\u8be6\u7ec6\u89e3\u91ca]\n\n"
+            "3. [\u7b2c\u4e09\u90e8\u5206\u6807\u9898]\n[\u8be6\u7ec6\u89e3\u91ca]\n\n"
+            "4. [\u7b2c\u56db\u90e8\u5206\u6807\u9898]\n[\u8be6\u7ec6\u89e3\u91ca]\n\n"
+            "\u6295\u8d44\u8005\u9700\u8981\u6ce8\u610f\u7684\u662f\uff1a\n[\u89e3\u91ca\u8fd9\u7bc7\u6587\u7ae0\u5bf9\u80a1\u7968/\u884c\u4e1a/\u4f30\u503c/\u98ce\u9669\u7684\u542b\u4e49]\n\n"
+            "\u4e00\u53e5\u8bdd\u603b\u7ed3\uff1a\n[\u7528\u4e00\u53e5\u8bdd\u603b\u7ed3\u6587\u7ae0\u7ed3\u8bba]"
+        )
+    if language == "Espa\u00f1ol":
+        return (
+            "Write the full detailed summary in Spanish. Article titles, company names, tickers, sources, and URLs may remain as supplied. "
+            "Use this translated structure: 'La idea central de este art\u00edculo es:', 'El art\u00edculo se divide principalmente en varios razonamientos:', "
+            "four numbered logic sections, 'Lo que los inversores deben tener en cuenta:', and 'Resumen en una frase:'."
+        )
+    return (
+        "Write the full detailed summary in English. Article titles, company names, tickers, sources, and URLs may remain as supplied. "
+        "Use this structure: 'The core idea of this article is:', 'The article mainly breaks into several logical parts:', "
+        "four numbered logic sections, 'What investors need to pay attention to:', and 'One-sentence summary:'."
+    )
+
+
+@st.cache_data(ttl=7 * 24 * 60 * 60)
+def get_cached_ai_yahoo_detailed_summary(
+    ticker, title, url, summary, language, detailed_summary_version, source_text, refresh_nonce=0
+):
+    source_text = _clean_extracted_article_text(source_text, max_chars=16000)
+    if not source_text:
+        return "", None
+    language = _news_summary_language(language)
+    try:
+        client = get_openai_client()
+    except Exception as exc:
+        return "", str(exc)
+    prompt = (
+        "Create a natural-language ChatGPT-style detailed explanation of the supplied Yahoo/yfinance news item. "
+        "Do not use the old fixed investment AI Summary template and do not output sections named News Overview, "
+        "Why It Matters, Potential Stock Impact, Positive Factors, Risk Factors, AI View, or Confidence. "
+        "Explain the article's logic clearly, not just a short overview. Use only the supplied text; do not fetch the URL. "
+        "First decide whether the article is actually related to stock investing. If it is investment-related, emphasize "
+        "what the article is really saying, the likely impact on the related ticker, bullish logic, risk logic, whether "
+        "the author's tone is optimistic, cautious, or pessimistic, and what investors should watch next. If it is not "
+        "investment-related, summarize it as ordinary news and do not force an investment conclusion. "
+        f"{_detailed_summary_language_instruction(language)}\n\n"
+        f"Ticker: {ticker or ''}\nTitle: {title or ''}\nURL: {url or ''}\n"
+        f"Source summary: {summary or ''}\nLanguage: {NEWS_SUMMARY_LANGUAGE_NAMES[language]}\n"
+        f"Detailed summary cache version: {detailed_summary_version}\n\n"
+        f"News content:\n{source_text}"
+    )
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+        )
+        detailed_summary = (response.choices[0].message.content or "").strip()
+        if not detailed_summary:
+            raise ValueError("AI detailed summary response was empty")
+        return detailed_summary, None
+    except Exception as exc:
+        return "", str(exc)
+
+
+def render_yahoo_news_detailed_summary(item):
+    language = _news_summary_language(st.session_state.get("language", "English"))
+    with st.expander(NEWS_DETAILED_SUMMARY_LABELS[language], expanded=False):
+        try:
+            source_text = _yahoo_news_source_text(item)
+            translation_key = _yahoo_translation_key(item, language)
+            if st.session_state.get(f"news_translation_requested_{translation_key}"):
+                translated_text, _ = get_cached_ai_news_translation(
+                    item.get("ticker") or "",
+                    item.get("title") or "",
+                    item.get("url") or "",
+                    language,
+                    AI_TRANSLATION_VERSION,
+                    source_text,
+                    st.session_state.get(f"news_translation_refresh_{translation_key}", 0),
+                )
+                if translated_text:
+                    source_text = translated_text
+            detailed_summary_key = hashlib.sha256(json.dumps(
+                [
+                    item.get("ticker") or "",
+                    item.get("title") or "",
+                    item.get("url") or "",
+                    item.get("text") or "",
+                    language,
+                    AI_DETAILED_SUMMARY_VERSION,
+                ],
+                ensure_ascii=True,
+            ).encode("utf-8")).hexdigest()
+            requested_key = f"news_detailed_summary_requested_{detailed_summary_key}"
+            button_label, refresh_label, idle_caption = NEWS_DETAILED_SUMMARY_UI[language]
+            if st.button(button_label, key=f"generate_news_detailed_summary_{detailed_summary_key}"):
+                st.session_state[requested_key] = True
+            if not st.session_state.get(requested_key):
+                st.caption(idle_caption)
+                return
+            detailed_summary, warning = get_cached_ai_yahoo_detailed_summary(
+                item.get("ticker") or "",
+                item.get("title") or "",
+                item.get("url") or "",
+                item.get("text") or "",
+                language,
+                AI_DETAILED_SUMMARY_VERSION,
+                source_text,
+                st.session_state.get(f"news_detailed_summary_refresh_{detailed_summary_key}", 0),
+            )
+            if detailed_summary:
+                st.markdown(detailed_summary)
+            else:
+                st.warning(NEWS_DETAILED_SUMMARY_UNAVAILABLE[language])
+            if warning and not detailed_summary:
+                st.caption(warning)
+            if st.button(refresh_label, key=f"refresh_news_detailed_summary_{detailed_summary_key}"):
+                refresh_key = f"news_detailed_summary_refresh_{detailed_summary_key}"
+                st.session_state[refresh_key] = st.session_state.get(refresh_key, 0) + 1
+                st.rerun()
+        except Exception:
+            st.warning(NEWS_DETAILED_SUMMARY_UNAVAILABLE[language])
 
 
 def _rule_based_news_summary(title, text, ticker, sentiment, language):
@@ -627,17 +1225,19 @@ def get_cached_ai_news_summary(title, ticker, source, published_date, sentiment,
     except Exception:
         return fallback, None
     language = _news_summary_language(language)
+    language_instruction = _news_summary_language_instruction(language)
     prompt = (
         "Create a concise but detailed investment-focused article summary using only the supplied news metadata. "
         "Do not fetch or infer content from the article URL. Preserve company names, tickers, source names, "
         f"and other proper nouns exactly as supplied. Write the values in {NEWS_SUMMARY_LANGUAGE_NAMES[language]}. "
+        f"{language_instruction} "
         "Return JSON only with keys news_overview, why_it_matters, potential_stock_impact, positive_factors, "
         "risk_factors, what_to_watch_next, ai_view, confidence. news_overview must be 2-3 sentences. "
         "positive_factors, risk_factors, and what_to_watch_next must each be arrays with 2-3 concise items. "
-        "potential_stock_impact must state whether the article is Bullish, Neutral, or Bearish for the related stock and explain why. "
-        "ai_view must be Bullish, Neutral, or Bearish. confidence must be Low, Medium, or High. "
+        "potential_stock_impact must state whether the article is bullish, neutral, or bearish for the related stock and explain why, using the requested language. "
+        "ai_view and confidence must use the requested language, not fixed English labels. "
         "Keep the full response around 120-180 English words, 180-260 Chinese characters, or 130-190 Spanish words. "
-        "Translate the section values naturally for the requested language, including the view and confidence labels, "
+        "Translate the section values naturally for the requested language, including every bullet point, the view, and confidence labels, "
         "but do not translate the supplied article title, company name, ticker, source, or URL.\n\n"
         f"Title: {title or ''}\nTicker: {ticker or ''}\nSource: {source or ''}\n"
         f"Published date: {published_date or ''}\nExisting sentiment: {sentiment or ''}\n"
@@ -703,13 +1303,13 @@ def render_ai_news_summary(item):
                 st.warning(warning)
             labels = NEWS_SUMMARY_FIELD_LABELS[language]
             for field in ("news_overview", "why_it_matters", "potential_stock_impact"):
-                st.markdown(f"**{labels[field]}:** {summary[field]}")
+                st.markdown(f"**{_news_summary_label_text(labels, field, language)}** {summary[field]}")
             for field in ("positive_factors", "risk_factors", "what_to_watch_next"):
-                st.markdown(f"**{labels[field]}:**")
+                st.markdown(f"**{_news_summary_label_text(labels, field, language)}**")
                 for value in summary[field]:
                     st.markdown(f"- {value}")
             for field in ("ai_view", "confidence"):
-                st.markdown(f"**{labels[field]}:** {summary[field]}")
+                st.markdown(f"**{_news_summary_label_text(labels, field, language)}** {summary[field]}")
             if st.button(refresh_label, key=f"refresh_news_summary_{summary_key}"):
                 refresh_key = f"news_summary_refresh_{summary_key}"
                 st.session_state[refresh_key] = st.session_state.get(refresh_key, 0) + 1
@@ -718,25 +1318,163 @@ def render_ai_news_summary(item):
             st.warning(f"AI summary unavailable: {exc}")
 
 
+@st.cache_data(ttl=12 * 60 * 60)
+def get_cached_ai_ticker_news_summary(ticker, news_digest, language, summary_version, refresh_nonce=0):
+    language = _news_summary_language(language)
+    news_items = json.loads(news_digest or "[]")
+    joined_text = "\n".join(
+        f"- {item.get('title') or ''} | {item.get('publisher') or ''} | {item.get('published_date') or ''} | {item.get('text') or ''}"
+        for item in news_items[:10]
+    )
+    fallback = _rule_based_news_summary(
+        f"{ticker} recent Yahoo news",
+        joined_text,
+        ticker,
+        "Neutral",
+        language,
+    )
+    try:
+        client = get_openai_client()
+    except Exception:
+        return fallback, None
+    language_instruction = _news_summary_language_instruction(language)
+    prompt = (
+        "Create a concise investment-focused summary for the supplied Yahoo/yfinance news list. "
+        "Use only the supplied headlines, publishers, dates, and summaries. "
+        f"Write the values in {NEWS_SUMMARY_LANGUAGE_NAMES[language]}. "
+        f"{language_instruction} "
+        "Return JSON only with keys news_overview, why_it_matters, potential_stock_impact, positive_factors, "
+        "risk_factors, what_to_watch_next, ai_view, confidence. "
+        "potential_stock_impact and ai_view must explicitly describe a bullish, bearish, or neutral view using the requested language. "
+        "positive_factors, risk_factors, and what_to_watch_next must each be arrays with 2-3 concise items. "
+        "Translate every bullet point naturally into the requested language. Keep the full response concise.\n\n"
+        f"Ticker: {ticker}\nNews list:\n{joined_text}"
+    )
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"},
+        )
+        summary = json.loads(response.choices[0].message.content)
+        required_fields = (
+            "news_overview", "why_it_matters", "potential_stock_impact", "positive_factors",
+            "risk_factors", "what_to_watch_next", "ai_view", "confidence",
+        )
+        if not all(summary.get(field) for field in required_fields):
+            raise ValueError("AI summary response omitted required fields")
+        for field in ("positive_factors", "risk_factors", "what_to_watch_next"):
+            if not isinstance(summary[field], list) or not 2 <= len(summary[field]) <= 3:
+                raise ValueError(f"AI summary field {field} must contain 2-3 items")
+        return {field: summary[field] if isinstance(summary[field], list) else str(summary[field]) for field in required_fields}, None
+    except Exception as exc:
+        return fallback, f"AI summary unavailable; showing rule-based fallback: {exc}"
+
+
+def render_ticker_news_summary(ticker, news_items):
+    language = _news_summary_language(st.session_state.get("language", "English"))
+    digest = json.dumps(
+        [
+            {
+                "title": item.get("title"),
+                "publisher": item.get("publisher"),
+                "published_date": item.get("published_date"),
+                "text": item.get("text"),
+            }
+            for item in news_items[:10]
+        ],
+        ensure_ascii=True,
+        sort_keys=True,
+    )
+    summary_key = hashlib.sha256(f"{ticker}:{language}:{AI_SUMMARY_VERSION}:{digest}".encode("utf-8")).hexdigest()
+    summary, warning = get_cached_ai_ticker_news_summary(
+        ticker,
+        digest,
+        language,
+        AI_SUMMARY_VERSION,
+        st.session_state.get(f"ticker_news_summary_refresh_{summary_key}", 0),
+    )
+    with st.expander(NEWS_SUMMARY_LABELS[language], expanded=True):
+        if warning:
+            st.warning(warning)
+        labels = NEWS_SUMMARY_FIELD_LABELS[language]
+        for field in ("news_overview", "why_it_matters", "potential_stock_impact"):
+            st.markdown(f"**{_news_summary_label_text(labels, field, language)}** {summary[field]}")
+        for field in ("positive_factors", "risk_factors", "what_to_watch_next"):
+            st.markdown(f"**{_news_summary_label_text(labels, field, language)}**")
+            for value in summary[field]:
+                st.markdown(f"- {value}")
+        for field in ("ai_view", "confidence"):
+            st.markdown(f"**{_news_summary_label_text(labels, field, language)}** {summary[field]}")
+
+
+def yahoo_news_score_caption_parts(item):
+    language = _news_summary_language(st.session_state.get("language", "English"))
+    article_text = get_cached_yahoo_article_text(item.get("url"))
+    try:
+        scores = get_cached_yahoo_news_scores(
+            item.get("ticker") or "",
+            item.get("title") or "",
+            item.get("url") or "",
+            item.get("text") or "",
+            language,
+            AI_SENTIMENT_VERSION,
+            item.get("publisher") or "",
+            item.get("published_date") or "",
+            article_text or "",
+        )
+    except Exception:
+        scores = {
+            "credibility_score": _rule_based_yahoo_credibility_score(
+                item.get("ticker") or "",
+                item.get("title") or "",
+                item.get("url") or "",
+                item.get("text") or "",
+                item.get("publisher") or "",
+                item.get("published_date") or "",
+                article_text or "",
+            ),
+            "sentiment_score": 0.0,
+        }
+    return _format_yahoo_scores(
+        scores.get("credibility_score", 0),
+        scores.get("sentiment_score", 0.0),
+        language,
+    )
+
+
 def render_news_item(item):
     title = item.get("title") or t("untitled_article")
     url = item.get("url")
+    is_yahoo_news = item.get("source") == "Yahoo/yfinance"
     st.markdown("#### " + title)
     publisher = item.get("publisher") or t("unknown_publisher")
-    st.caption(
-        f"{item.get('published_date') or t('date_unavailable')} | "
-        f"{publisher} | {item.get('ticker') or t('market')} | "
-        f"{item.get('source') or t('unknown_source')} | {news_sentiment_label(item['sentiment'])}"
-    )
-    if item.get("text"):
+    related_ticker = item.get("related_tickers") or item.get("ticker") or t("market")
+    caption_parts = [
+        item.get("published_date") or t("date_unavailable"),
+        publisher,
+        item.get("ticker") or t("market"),
+        f"{t('related_ticker')}: {related_ticker}",
+        item.get("source") or t("unknown_source"),
+    ]
+    if not is_yahoo_news:
+        caption_parts.append(news_sentiment_label(item["sentiment"]))
+    else:
+        caption_parts.extend(yahoo_news_score_caption_parts(item))
+    st.caption(" | ".join(caption_parts))
+    if item.get("text") and not is_yahoo_news:
         st.write(item["text"])
-    render_ai_news_summary(item)
+    if is_yahoo_news:
+        render_yahoo_news_translation(item)
+        render_yahoo_news_detailed_summary(item)
+    else:
+        render_ai_news_summary(item)
     if url:
         st.link_button(t("open_article"), url)
     st.divider()
 
 
-def render_news_section():
+def render_fmp_news_section():
     st.caption(t("fmp_news_fallback"))
     try:
         stock_news = get_cached_watchlist_news(tuple(WATCHLIST))
@@ -796,6 +1534,38 @@ def render_news_section():
     else:
         for item in sorted(market_news, key=_news_sort_key, reverse=True)[:item_limit]:
             render_news_item(item)
+
+
+def render_yahoo_news_section():
+    st.subheader(t("yahoo_news"))
+    st.caption(t("yahoo_news_caption"))
+    try:
+        yahoo_news_by_ticker = get_cached_watchlist_yahoo_news(tuple(WATCHLIST), 10)
+    except Exception as exc:
+        st.warning(f"{t('yahoo_news_unavailable')}: {exc}")
+        yahoo_news_by_ticker = {}
+
+    for ticker in WATCHLIST:
+        news_items = [
+            {**item, "sentiment": classify_news_sentiment(item)}
+            for item in yahoo_news_by_ticker.get(ticker, [])
+            if item.get("title")
+        ]
+        with st.expander(f"{ticker} | {COMPANY_NAMES[ticker]} | {t('related_news')}", expanded=ticker == "NVDA"):
+            if not news_items:
+                st.info(t("no_yahoo_news"))
+                continue
+            render_ticker_news_summary(ticker, news_items)
+            for item in sorted(news_items, key=_news_sort_key, reverse=True)[:10]:
+                render_news_item(item)
+
+
+def render_news_section():
+    fmp_tab, yahoo_tab = st.tabs([t("fmp_news_tab"), t("yahoo_news_tab")])
+    with fmp_tab:
+        render_fmp_news_section()
+    with yahoo_tab:
+        render_yahoo_news_section()
 
 
 def fetch_news_headlines(ticker, limit=5):
@@ -1058,23 +1828,6 @@ def render_overview_cards(snapshots):
             render_snapshot_card(column, snapshot)
         else:
             column.warning(f"{ticker} {t('data_unavailable')}")
-
-
-def render_diagnostics(snapshots):
-    rows = []
-    for ticker in WATCHLIST:
-        snapshot = snapshots.get(ticker) or {}
-        rows.append({
-            t("ticker"): ticker, t("company"): snapshot.get("name") or COMPANY_NAMES[ticker],
-            t("data_source"): snapshot.get("source") or "unavailable", t("revenue"): format_money(snapshot.get("revenue")),
-            t("net_margin"): format_percent(snapshot.get("net_margin")),
-            "P/E": format_ratio(snapshot.get("trailing_pe")),
-            "P/B": format_ratio(snapshot.get("price_to_book")),
-            t("revenue_growth_yoy"): format_percent(snapshot.get("revenue_growth_yoy")),
-            t("analyst_target"): format_money(snapshot.get("analyst_target"), 2), t("next_earnings_date"): snapshot.get("next_earnings_date") or "N/A",
-            t("last_updated"): snapshot.get("last_updated") or "N/A", t("diagnostic_note"): snapshot.get("diagnostic_note") or "N/A",
-        })
-    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
 
 def get_macro_trend(history):
@@ -1940,7 +2693,7 @@ st.divider()
 
 tabs = st.tabs([
     t("technical_analysis"), t("options_gex"), t("value_investing"),
-    t("news_sentiment"), t("multi_agent_research"), t("data_diagnostics"), t("macro"), mt("tab"),
+    t("news_sentiment"), t("multi_agent_research"), t("macro"), mt("tab"),
 ])
 with tabs[0]:
     render_technical_section()
@@ -1953,8 +2706,6 @@ with tabs[3]:
 with tabs[4]:
     render_multi_agent_section()
 with tabs[5]:
-    render_diagnostics(snapshots)
-with tabs[6]:
     render_macro_section()
-with tabs[7]:
+with tabs[6]:
     render_mu_valuation_model(snapshots)
