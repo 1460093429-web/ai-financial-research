@@ -3,9 +3,12 @@
 from datetime import date, datetime, timedelta
 import hashlib
 import html
+import io
 import json
 import os
 import re
+from time import perf_counter
+from urllib.parse import urljoin
 
 import feedparser
 import numpy as np
@@ -16,7 +19,7 @@ from scipy.stats import norm
 import streamlit as st
 import yfinance as yf
 
-from config import CACHE_DIR, get_openai_client
+from config import CACHE_DIR, get_fmp_api_key, get_openai_client
 from financials import fetch_company_news, fetch_general_news, fetch_historical_prices, get_company_snapshot as get_fmp_company_snapshot
 from macro_data import build_macro_snapshot, fetch_indicator, fetch_macro_calendar, fetch_market_series, fetch_treasury_rates
 
@@ -25,7 +28,10 @@ YFINANCE_CACHE_DIR = CACHE_DIR / "yfinance"
 os.makedirs(YFINANCE_CACHE_DIR, exist_ok=True)
 yf.cache.set_cache_location(YFINANCE_CACHE_DIR)
 
-WATCHLIST = ["NVDA", "MU", "SNDK", "LITE", "RKLB"]
+FMP_BASE_URL = "https://financialmodelingprep.com/stable"
+CARD_FINANCIAL_TTL_SECONDS = 21600
+DEFAULT_WATCHLIST = ["NVDA", "MU", "SNDK", "LITE", "RKLB"]
+WATCHLIST_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "watchlist.json")
 COMPANY_NAMES = {
     "NVDA": "NVIDIA",
     "MU": "Micron",
@@ -45,6 +51,121 @@ EARNINGS_DATES = {
     "MU": "2026-07-01",
     "SNDK": "2026-08-13",
 }
+
+
+def _debug_state():
+    if "_perf_debug" not in st.session_state:
+        st.session_state["_perf_debug"] = {
+            "api_calls": 0,
+            "cacheable_calls": 0,
+            "sections": {},
+        }
+    return st.session_state["_perf_debug"]
+
+
+def reset_debug_state():
+    st.session_state["_perf_debug"] = {
+        "api_calls": 0,
+        "cacheable_calls": 0,
+        "sections": {},
+    }
+
+
+def track_cacheable_call():
+    _debug_state()["cacheable_calls"] += 1
+
+
+def track_api_call(name):
+    debug = _debug_state()
+    debug["api_calls"] += 1
+    debug[name] = debug.get(name, 0) + 1
+
+
+def track_section_time(name, elapsed):
+    _debug_state()["sections"][name] = elapsed
+
+
+def render_debug_panel():
+    debug = _debug_state()
+    with st.sidebar.expander("Performance debug", expanded=False):
+        st.write(f"API calls made this run: {debug.get('api_calls', 0)}")
+        st.write(f"Cacheable function calls: {debug.get('cacheable_calls', 0)}")
+        st.caption("Streamlit cache hits do not execute cached function bodies; low API calls usually means cached data was used.")
+        sections = debug.get("sections", {})
+        if sections:
+            st.write("Section load times:")
+            for section, elapsed in sections.items():
+                st.write(f"- {section}: {elapsed:.2f}s")
+
+
+def normalize_ticker(ticker):
+    return re.sub(r"\s+", "", str(ticker or "")).upper()
+
+
+def load_watchlist():
+    if not os.path.exists(WATCHLIST_FILE):
+        save_watchlist(DEFAULT_WATCHLIST)
+        return list(DEFAULT_WATCHLIST)
+    try:
+        with open(WATCHLIST_FILE, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        if not isinstance(data, dict) or not isinstance(data.get("tickers"), list):
+            raise ValueError("watchlist.json must contain a tickers list")
+        tickers = data.get("tickers", [])
+        normalized = []
+        for ticker in tickers:
+            symbol = normalize_ticker(ticker)
+            if symbol and re.fullmatch(r"[A-Z0-9.-]+", symbol) and symbol not in normalized:
+                normalized.append(symbol)
+        return normalized
+    except Exception:
+        pass
+    save_watchlist(DEFAULT_WATCHLIST)
+    return list(DEFAULT_WATCHLIST)
+
+
+def save_watchlist(tickers):
+    normalized = []
+    for ticker in tickers or []:
+        symbol = normalize_ticker(ticker)
+        if symbol and re.fullmatch(r"[A-Z0-9.-]+", symbol) and symbol not in normalized:
+            normalized.append(symbol)
+    with open(WATCHLIST_FILE, "w", encoding="utf-8") as handle:
+        json.dump({"tickers": normalized}, handle, ensure_ascii=False, indent=2)
+    return normalized
+
+
+def add_ticker_to_watchlist(ticker):
+    symbol = normalize_ticker(ticker)
+    if not symbol:
+        return False, "watchlist_invalid_ticker", ""
+    if not re.fullmatch(r"[A-Z0-9.-]+", symbol):
+        return False, "watchlist_invalid_ticker", symbol
+    tickers = load_watchlist()
+    if symbol in tickers:
+        return False, "watchlist_ticker_exists", symbol
+    tickers.append(symbol)
+    save_watchlist(tickers)
+    return True, "watchlist_added_success", symbol
+
+
+def remove_ticker_from_watchlist(ticker):
+    symbol = normalize_ticker(ticker)
+    tickers = load_watchlist()
+    if symbol not in tickers:
+        return False, "watchlist_invalid_ticker", symbol
+    save_watchlist([item for item in tickers if item != symbol])
+    return True, "watchlist_removed_success", symbol
+
+
+def company_name(ticker, snapshot=None):
+    if snapshot and snapshot.get("name"):
+        return snapshot["name"]
+    return COMPANY_NAMES.get(ticker, ticker)
+
+
+def supply_chain_role(ticker):
+    return SUPPLY_CHAIN_ROLES.get(ticker, "Dynamic watchlist stock")
 POSITIVE_NEWS_KEYWORDS = (
     "beat", "raise", "growth", "demand", "upgrade", "strong", "record",
     "expansion", "partnership",
@@ -92,8 +213,8 @@ TRANSLATIONS = {
         "ai_summary_unavailable": "AI report summary unavailable", "company": "Company", "supply_chain_role": "Supply Chain Role",
         "trailing_pe": "Trailing P/E", "forward_pe": "Forward P/E", "price_book": "Price / Book", "analyst_target": "Analyst Target",
         "next_earnings_date": "Next Earnings Date", "estimated_eps": "Estimated EPS", "actual_eps": "Actual EPS", "eps_surprise": "EPS Surprise",
-        "days_until_earnings": "Days Until Earnings", "multi_agent_caption": "Run the five-agent workflow for the whole watchlist. Each stock receives a separate verdict.",
-        "run_multi_agent": "Run All-Stock Multi-Agent Analysis", "running_agents": "Running research agents for", "final_verdict": "Final Verdict",
+        "days_until_earnings": "Days Until Earnings", "multi_agent_caption": "Run the five-agent workflow for one selected ticker.",
+        "run_multi_agent": "Run Multi-Agent Analysis", "running_agents": "Running research agents for", "final_verdict": "Final Verdict",
         "agent_detail": "Agent Detail", "fundamental_analysis": "Fundamental Analysis", "options_analysis": "Options Analysis",
         "data_unavailable": "data unavailable", "data_source": "Data Source", "revenue_growth_yoy": "Revenue Growth YoY",
         "last_updated": "Last Updated", "diagnostic_note": "Diagnostic Note", "macro_caption": "Dynamic FMP-first macro dashboard for the next 30 days. Market-series fallbacks use yfinance.",
@@ -134,8 +255,8 @@ TRANSLATIONS = {
         "technical_snapshot": "技术快照", "options_snapshot": "期权与 GEX 快照", "value_snapshot": "价值投资快照", "earnings_catalysts": "财报催化剂", "ai_summary": "AI 摘要",
         "ai_summary_unavailable": "AI 报告摘要不可用", "company": "公司", "supply_chain_role": "供应链角色", "trailing_pe": "历史市盈率", "forward_pe": "预期市盈率",
         "price_book": "市净率", "analyst_target": "分析师目标价", "next_earnings_date": "下次财报日期", "estimated_eps": "预估 EPS", "actual_eps": "实际 EPS",
-        "eps_surprise": "EPS 超预期幅度", "days_until_earnings": "距离财报天数", "multi_agent_caption": "为整个观察列表运行五智能体工作流。每只股票都会获得单独结论。",
-        "run_multi_agent": "运行全股票多智能体分析", "running_agents": "正在运行研究智能体：", "final_verdict": "最终结论", "agent_detail": "智能体详情",
+        "eps_surprise": "EPS 超预期幅度", "days_until_earnings": "距离财报天数", "multi_agent_caption": "为一个选定股票运行五智能体分析流程。",
+        "run_multi_agent": "运行该股票多智能体分析", "running_agents": "正在运行研究智能体：", "final_verdict": "最终结论", "agent_detail": "智能体详情",
         "fundamental_analysis": "基本面分析", "options_analysis": "期权分析", "data_unavailable": "数据不可用", "data_source": "数据来源",
         "revenue_growth_yoy": "营收同比增长", "last_updated": "最后更新", "diagnostic_note": "诊断说明", "macro_caption": "未来 30 天的动态宏观仪表板，优先使用 FMP 数据。市场序列备用来源使用 yfinance。",
         "refresh_macro": "刷新宏观数据", "calendar_window": "日历区间", "macro_risk_score": "宏观风险评分", "treasury_source": "美债数据来源",
@@ -173,7 +294,7 @@ TRANSLATIONS = {
         "technical_snapshot": "Resumen técnico", "options_snapshot": "Resumen de opciones y GEX", "value_snapshot": "Resumen de inversión en valor", "earnings_catalysts": "Catalizadores de resultados", "ai_summary": "Resumen de IA",
         "ai_summary_unavailable": "Resumen del informe de IA no disponible", "company": "Empresa", "supply_chain_role": "Función en la cadena de suministro", "trailing_pe": "P/E histórico", "forward_pe": "P/E futuro",
         "price_book": "Precio / valor contable", "analyst_target": "Objetivo de analistas", "next_earnings_date": "Próxima fecha de resultados", "estimated_eps": "BPA estimado", "actual_eps": "BPA real",
-        "eps_surprise": "Sorpresa del BPA", "days_until_earnings": "Días hasta resultados", "multi_agent_caption": "Ejecute el flujo de cinco agentes para toda la lista. Cada acción recibe un veredicto independiente.",
+        "eps_surprise": "Sorpresa del BPA", "days_until_earnings": "Días hasta resultados", "multi_agent_caption": "Ejecute el flujo de cinco agentes para un ticker seleccionado.",
         "run_multi_agent": "Ejecutar análisis multiagente", "running_agents": "Ejecutando agentes de análisis para", "final_verdict": "Veredicto final", "agent_detail": "Detalle de agentes",
         "fundamental_analysis": "Análisis fundamental", "options_analysis": "Análisis de opciones", "data_unavailable": "datos no disponibles", "data_source": "Fuente de datos",
         "revenue_growth_yoy": "Crecimiento interanual de ingresos", "last_updated": "Última actualización", "diagnostic_note": "Nota de diagnóstico", "macro_caption": "Panel macro dinámico para los próximos 30 días, con prioridad para FMP. Los respaldos usan yfinance.",
@@ -188,6 +309,224 @@ TRANSLATIONS = {
         "related_news": "Noticias relacionadas", "related_ticker": "Ticker relacionado",
     },
 }
+
+
+NEWS_UI_TRANSLATION_OVERRIDES = {
+    "English": {
+        "full_translation": "Full Translation",
+        "chatgpt_detailed_summary": "ChatGPT Detailed Summary",
+        "open_article": "Open article",
+        "trendforce_news_tab": "TrendForce News",
+        "trendforce_news": "TrendForce News",
+        "trendforce_news_caption": "TrendForce semiconductor and memory industry news.",
+        "no_trendforce_news": "TrendForce news has no data or is not configured yet.",
+        "watchlist_manager": "Stock Watchlist",
+        "watchlist_input": "Enter stock ticker",
+        "watchlist_add": "Add stock",
+        "watchlist_remove": "Remove stock",
+        "watchlist_current": "Current watchlist",
+        "watchlist_ticker_exists": "Stock already exists.",
+        "watchlist_added_success": "Stock added successfully.",
+        "watchlist_removed_success": "Stock removed successfully.",
+        "watchlist_invalid_ticker": "Invalid stock ticker.",
+        "option_expiry": "Option expiration",
+        "current_expiry": "Current expiration",
+        "option_expirations_not_found": "No available option expirations found",
+        "option_open_interest_missing": "This expiration did not return open interest data",
+        "option_gamma_missing": "The data source did not return gamma, so net GEX cannot be calculated",
+        "option_call_put_empty": "Call/put data is empty for this expiration",
+        "option_price_available_chain_unavailable": "Price is available, but the option chain is unavailable",
+        "options_ai_summary": "Options AI Summary",
+        "generate_options_ai_summary": "Generate Options AI Summary",
+        "options_ai_summary_idle": "Generate this summary on demand to limit AI costs.",
+        "options_ai_summary_disclaimer": "Risk disclaimer: this is not financial advice.",
+    },
+    "\u4e2d\u6587": {
+        "full_translation": "\u5168\u6587\u7ffb\u8bd1",
+        "chatgpt_detailed_summary": "ChatGPT \u8be6\u7ec6\u603b\u7ed3",
+        "open_article": "\u6253\u5f00\u6587\u7ae0",
+        "trendforce_news_tab": "TrendForce \u65b0\u95fb",
+        "trendforce_news": "TrendForce \u65b0\u95fb",
+        "trendforce_news_caption": "TrendForce \u534a\u5bfc\u4f53\u4e0e\u5b58\u50a8\u884c\u4e1a\u65b0\u95fb\u3002",
+        "no_trendforce_news": "TrendForce \u65b0\u95fb\u6682\u65e0\u6570\u636e\u6216\u5c1a\u672a\u914d\u7f6e\u3002",
+        "watchlist_manager": "\u80a1\u7968\u89c2\u5bdf\u5217\u8868",
+        "watchlist_input": "\u8f93\u5165\u80a1\u7968\u4ee3\u7801",
+        "watchlist_add": "\u6dfb\u52a0\u80a1\u7968",
+        "watchlist_remove": "\u5220\u9664\u80a1\u7968",
+        "watchlist_current": "\u5f53\u524d\u89c2\u5bdf\u5217\u8868",
+        "watchlist_ticker_exists": "\u80a1\u7968\u5df2\u5b58\u5728\u3002",
+        "watchlist_added_success": "\u80a1\u7968\u6dfb\u52a0\u6210\u529f\u3002",
+        "watchlist_removed_success": "\u80a1\u7968\u5220\u9664\u6210\u529f\u3002",
+        "watchlist_invalid_ticker": "\u80a1\u7968\u4ee3\u7801\u65e0\u6548\u3002",
+        "option_expiry": "\u671f\u6743\u5230\u671f\u65e5",
+        "current_expiry": "\u5f53\u524d\u5230\u671f\u65e5",
+        "option_expirations_not_found": "\u672a\u627e\u5230\u53ef\u7528\u671f\u6743\u5230\u671f\u65e5",
+        "option_open_interest_missing": "\u8be5\u5230\u671f\u65e5\u6ca1\u6709\u8fd4\u56de open interest \u6570\u636e",
+        "option_gamma_missing": "\u8be5\u6570\u636e\u6e90\u672a\u8fd4\u56de gamma\uff0c\u51c0 GEX \u65e0\u6cd5\u8ba1\u7b97",
+        "option_call_put_empty": "\u8be5\u5230\u671f\u65e5 call/put \u6570\u636e\u4e3a\u7a7a",
+        "option_price_available_chain_unavailable": "\u4ef7\u683c\u53ef\u7528\uff0c\u4f46\u671f\u6743\u94fe\u4e0d\u53ef\u7528",
+        "options_ai_summary": "\u671f\u6743 AI \u603b\u7ed3",
+        "generate_options_ai_summary": "\u751f\u6210\u671f\u6743 AI \u603b\u7ed3",
+        "options_ai_summary_idle": "\u6309\u9700\u751f\u6210\u6b64\u603b\u7ed3\uff0c\u4ee5\u51cf\u5c11 AI \u8c03\u7528\u6210\u672c\u3002",
+        "options_ai_summary_disclaimer": "\u98ce\u9669\u63d0\u793a\uff1a\u8fd9\u4e0d\u662f\u6295\u8d44\u5efa\u8bae\u3002",
+    },
+    "Espa\u00f1ol": {
+        "full_translation": "Traducci\u00f3n completa",
+        "chatgpt_detailed_summary": "Resumen detallado de ChatGPT",
+        "open_article": "Abrir art\u00edculo",
+        "trendforce_news_tab": "Noticias de TrendForce",
+        "trendforce_news": "Noticias de TrendForce",
+        "trendforce_news_caption": "Noticias de TrendForce sobre semiconductores y memoria.",
+        "no_trendforce_news": "Las noticias de TrendForce no tienen datos o a\u00fan no est\u00e1n configuradas.",
+        "watchlist_manager": "Lista de seguimiento",
+        "watchlist_input": "Introducir ticker",
+        "watchlist_add": "A\u00f1adir acci\u00f3n",
+        "watchlist_remove": "Eliminar acci\u00f3n",
+        "watchlist_current": "Lista actual",
+        "watchlist_ticker_exists": "La acci\u00f3n ya existe.",
+        "watchlist_added_success": "Acci\u00f3n a\u00f1adida correctamente.",
+        "watchlist_removed_success": "Acci\u00f3n eliminada correctamente.",
+        "watchlist_invalid_ticker": "Ticker no v\u00e1lido.",
+        "option_expiry": "Vencimiento de opciones",
+        "current_expiry": "Vencimiento actual",
+        "option_expirations_not_found": "No se encontraron vencimientos de opciones disponibles",
+        "option_open_interest_missing": "Este vencimiento no devolvi\u00f3 datos de inter\u00e9s abierto",
+        "option_gamma_missing": "La fuente de datos no devolvi\u00f3 gamma, por lo que no se puede calcular el GEX neto",
+        "option_call_put_empty": "Los datos call/put est\u00e1n vac\u00edos para este vencimiento",
+        "option_price_available_chain_unavailable": "El precio est\u00e1 disponible, pero la cadena de opciones no est\u00e1 disponible",
+        "options_ai_summary": "Resumen IA de Opciones",
+        "generate_options_ai_summary": "Generar Resumen IA de Opciones",
+        "options_ai_summary_idle": "Genere este resumen bajo demanda para limitar los costos de IA.",
+        "options_ai_summary_disclaimer": "Aviso de riesgo: esto no es asesoramiento financiero.",
+    },
+}
+
+
+def _translation_language_key(language):
+    if language in TRANSLATIONS:
+        return language
+    if language == "\u4e2d\u6587":
+        return next((key for key in TRANSLATIONS if key not in ("English", "Espa\u00f1ol") and not str(key).startswith("Espa")), language)
+    if language == "Espa\u00f1ol":
+        return next((key for key in TRANSLATIONS if str(key).startswith("Espa")), language)
+    return language
+
+
+for _language, _labels in NEWS_UI_TRANSLATION_OVERRIDES.items():
+    TRANSLATIONS.setdefault(_translation_language_key(_language), {}).update(_labels)
+
+
+MACRO_TRANSLATION_OVERRIDES = {
+    "English": {
+        "macro_risk_score": "Macro risk score",
+        "us_treasury_yields": "US Treasury yields",
+        "fx_relative_performance": "FX relative performance",
+        "inflation_and_economy": "Inflation and economy",
+        "fed_indicator_explanation": "The Fed focuses most on PCE and Core PCE because they are closer to the official inflation framework behind the 2% target. CPI and Core CPI often move markets in the short term, but PCE carries more policy weight. Labor market data helps assess whether wage pressure and demand can keep inflation sticky.",
+        "fed_ranking": "Fed indicator ranking",
+        "why_it_matters": "Why it matters",
+        "fed_rank_core_pce": "Best read on underlying inflation in the Fed's preferred PCE framework.",
+        "fed_rank_pce": "Headline PCE is closest to the Fed's official 2% inflation target.",
+        "fed_rank_labor": "Shows whether wages and demand can keep inflation sticky.",
+        "fed_rank_core_cpi": "Market-moving inflation signal that strips out food and energy.",
+        "fed_rank_cpi": "High-frequency household inflation gauge, but less policy-weighted than PCE.",
+        "main_inflation_chart": "Main inflation chart",
+        "labor_market_chart": "Labor market chart",
+        "economy_chart": "Economy chart",
+        "economy_chart_explanation": "The economy chart tracks the broad growth trend of the US economy. GDP YoY Growth measures how much GDP has grown compared with the same quarter one year earlier. GDP is quarterly data, so it is useful for macro direction rather than short-term trading.",
+        "missing_macro_series": "Unavailable macro series: {series}",
+        "core_pce_yoy": "Core PCE YoY",
+        "pce_yoy": "PCE YoY",
+        "core_cpi_yoy": "Core CPI YoY",
+        "cpi_yoy": "CPI YoY",
+        "unemployment_rate": "Unemployment rate",
+        "wage_growth": "Wage growth",
+        "nonfarm_payrolls": "Nonfarm payrolls",
+        "job_openings": "Job openings",
+        "gdp_yoy_growth": "GDP YoY Growth",
+        "commodities_relative_performance": "Commodities relative performance",
+        "latest_macro_data": "Latest macro data",
+        "macro_series_unavailable": "Some macro series are unavailable.",
+        "chart_period": "Period",
+        "indicator": "Indicator",
+        "latest": "Latest",
+        "last_updated": "Last updated",
+    },
+    "\u4e2d\u6587": {
+        "macro_risk_score": "\u5b8f\u89c2\u98ce\u9669\u8bc4\u5206",
+        "us_treasury_yields": "\u7f8e\u503a\u6536\u76ca\u7387",
+        "fx_relative_performance": "\u6c47\u7387\u76f8\u5bf9\u8868\u73b0",
+        "inflation_and_economy": "\u901a\u80c0\u4e0e\u7ecf\u6d4e\u6570\u636e",
+        "fed_indicator_explanation": "\u7f8e\u8054\u50a8\u6700\u5173\u6ce8\u7684\u662f PCE \u548c\u6838\u5fc3 PCE\uff0c\u56e0\u4e3a\u5b83\u4eec\u66f4\u63a5\u8fd1\u7f8e\u8054\u50a8 2% \u901a\u80c0\u76ee\u6807\u7684\u5b98\u65b9\u8861\u91cf\u53e3\u5f84\u3002CPI \u548c\u6838\u5fc3 CPI \u5bf9\u5e02\u573a\u77ed\u671f\u53cd\u5e94\u66f4\u654f\u611f\uff0c\u4f46\u653f\u7b56\u6743\u91cd\u901a\u5e38\u4f4e\u4e8e PCE\u3002\u5c31\u4e1a\u5e02\u573a\u6570\u636e\u7528\u4e8e\u5224\u65ad\u901a\u80c0\u662f\u5426\u4f1a\u901a\u8fc7\u5de5\u8d44\u548c\u9700\u6c42\u7ee7\u7eed\u4fdd\u6301\u7c98\u6027\u3002",
+        "fed_ranking": "\u7f8e\u8054\u50a8\u6307\u6807\u6392\u540d",
+        "why_it_matters": "\u91cd\u8981\u6027",
+        "fed_rank_core_pce": "\u5728\u7f8e\u8054\u50a8\u504f\u597d\u7684 PCE \u6846\u67b6\u4e0b\u89c2\u5bdf\u5e95\u5c42\u901a\u80c0\u7684\u6700\u4f73\u6307\u6807\u3002",
+        "fed_rank_pce": "\u6574\u4f53 PCE \u6700\u63a5\u8fd1\u7f8e\u8054\u50a8 2% \u901a\u80c0\u76ee\u6807\u7684\u5b98\u65b9\u53e3\u5f84\u3002",
+        "fed_rank_labor": "\u663e\u793a\u5de5\u8d44\u548c\u9700\u6c42\u662f\u5426\u4f1a\u8ba9\u901a\u80c0\u7ee7\u7eed\u5177\u6709\u7c98\u6027\u3002",
+        "fed_rank_core_cpi": "\u5254\u9664\u98df\u54c1\u548c\u80fd\u6e90\u540e\u7684\u5e02\u573a\u654f\u611f\u578b\u901a\u80c0\u4fe1\u53f7\u3002",
+        "fed_rank_cpi": "\u9ad8\u9891\u5bb6\u5ead\u901a\u80c0\u6307\u6807\uff0c\u4f46\u653f\u7b56\u6743\u91cd\u4f4e\u4e8e PCE\u3002",
+        "main_inflation_chart": "\u4e3b\u8981\u901a\u80c0\u56fe\u8868",
+        "labor_market_chart": "\u52b3\u52a8\u529b\u5e02\u573a\u56fe\u8868",
+        "economy_chart": "\u7ecf\u6d4e\u56fe\u8868",
+        "economy_chart_explanation": "\u7ecf\u6d4e\u56fe\u8868\u4e3b\u8981\u7528\u4e8e\u89c2\u5bdf\u7f8e\u56fd\u7ecf\u6d4e\u589e\u957f\u8d8b\u52bf\u3002GDP \u540c\u6bd4\u589e\u957f\u8868\u793a\u5f53\u524d\u5b63\u5ea6 GDP \u76f8\u6bd4\u53bb\u5e74\u540c\u671f\u7684\u589e\u957f\u901f\u5ea6\u3002GDP \u662f\u5b63\u5ea6\u6570\u636e\uff0c\u9002\u5408\u5224\u65ad\u7ecf\u6d4e\u5927\u65b9\u5411\uff0c\u4e0d\u9002\u5408\u7528\u4e8e\u77ed\u7ebf\u4ea4\u6613\u3002\u5982\u679c GDP \u540c\u6bd4\u4e0a\u5347\uff0c\u8bf4\u660e\u7ecf\u6d4e\u589e\u957f\u8f83\u5f3a\uff1b\u5982\u679c\u6301\u7eed\u4e0b\u964d\uff0c\u8bf4\u660e\u7ecf\u6d4e\u653e\u7f13\u6216\u8870\u9000\u98ce\u9669\u4e0a\u5347\u3002",
+        "missing_macro_series": "\u4e0d\u53ef\u7528\u7684\u5b8f\u89c2\u5e8f\u5217\uff1a{series}",
+        "core_pce_yoy": "\u6838\u5fc3 PCE \u540c\u6bd4",
+        "pce_yoy": "PCE \u540c\u6bd4",
+        "core_cpi_yoy": "\u6838\u5fc3 CPI \u540c\u6bd4",
+        "cpi_yoy": "CPI \u540c\u6bd4",
+        "unemployment_rate": "\u5931\u4e1a\u7387",
+        "wage_growth": "\u5de5\u8d44\u589e\u901f",
+        "nonfarm_payrolls": "\u975e\u519c\u5c31\u4e1a",
+        "job_openings": "\u804c\u4f4d\u7a7a\u7f3a",
+        "gdp_yoy_growth": "GDP \u540c\u6bd4\u589e\u957f",
+        "commodities_relative_performance": "\u5927\u5b97\u5546\u54c1\u76f8\u5bf9\u8868\u73b0",
+        "latest_macro_data": "\u6700\u65b0\u5b8f\u89c2\u6570\u636e",
+        "macro_series_unavailable": "\u90e8\u5206\u5b8f\u89c2\u6570\u636e\u6682\u4e0d\u53ef\u7528\u3002",
+        "chart_period": "\u5468\u671f",
+        "indicator": "\u6307\u6807",
+        "latest": "\u6700\u65b0",
+        "last_updated": "\u6700\u540e\u66f4\u65b0",
+    },
+    "Espa\u00f1ol": {
+        "macro_risk_score": "Puntuaci\u00f3n de riesgo macro",
+        "us_treasury_yields": "Rendimientos del Tesoro de EE. UU.",
+        "fx_relative_performance": "Rendimiento relativo de divisas",
+        "inflation_and_economy": "Inflaci\u00f3n y econom\u00eda",
+        "fed_indicator_explanation": "La Fed se centra especialmente en el PCE y el PCE subyacente porque est\u00e1n m\u00e1s cerca del marco oficial de inflaci\u00f3n asociado al objetivo del 2%. El IPC y el IPC subyacente suelen mover el mercado a corto plazo, pero el PCE tiene m\u00e1s peso en pol\u00edtica monetaria. Los datos laborales ayudan a evaluar si los salarios y la demanda mantienen la inflaci\u00f3n persistente.",
+        "fed_ranking": "Clasificaci\u00f3n de indicadores de la Fed",
+        "why_it_matters": "Por qu\u00e9 importa",
+        "fed_rank_core_pce": "Mejor lectura de la inflaci\u00f3n subyacente en el marco PCE preferido por la Fed.",
+        "fed_rank_pce": "El PCE general es el m\u00e1s cercano al objetivo oficial de inflaci\u00f3n del 2% de la Fed.",
+        "fed_rank_labor": "Muestra si salarios y demanda pueden mantener persistente la inflaci\u00f3n.",
+        "fed_rank_core_cpi": "Se\u00f1al de inflaci\u00f3n que mueve el mercado y excluye alimentos y energ\u00eda.",
+        "fed_rank_cpi": "Indicador frecuente de inflaci\u00f3n de los hogares, pero con menor peso pol\u00edtico que el PCE.",
+        "main_inflation_chart": "Gr\u00e1fico principal de inflaci\u00f3n",
+        "labor_market_chart": "Gr\u00e1fico del mercado laboral",
+        "economy_chart": "Gr\u00e1fico de econom\u00eda",
+        "economy_chart_explanation": "El gr\u00e1fico econ\u00f3mico sigue la tendencia general de crecimiento de la econom\u00eda estadounidense. El crecimiento interanual del PIB mide cu\u00e1nto ha crecido el PIB frente al mismo trimestre del a\u00f1o anterior. El PIB es un dato trimestral, por lo que sirve para analizar la direcci\u00f3n macro, no para trading de corto plazo.",
+        "missing_macro_series": "Series macro no disponibles: {series}",
+        "core_pce_yoy": "PCE subyacente interanual",
+        "pce_yoy": "PCE interanual",
+        "core_cpi_yoy": "IPC subyacente interanual",
+        "cpi_yoy": "IPC interanual",
+        "unemployment_rate": "Tasa de desempleo",
+        "wage_growth": "Crecimiento salarial",
+        "nonfarm_payrolls": "N\u00f3minas no agr\u00edcolas",
+        "job_openings": "Vacantes laborales",
+        "gdp_yoy_growth": "Crecimiento interanual del PIB",
+        "commodities_relative_performance": "Rendimiento relativo de materias primas",
+        "latest_macro_data": "\u00daltimos datos macro",
+        "macro_series_unavailable": "Algunas series macro no est\u00e1n disponibles.",
+        "chart_period": "Periodo",
+        "indicator": "Indicador",
+        "latest": "\u00daltimo",
+        "last_updated": "\u00daltima actualizaci\u00f3n",
+    },
+}
+
+
+for _language, _labels in MACRO_TRANSLATION_OVERRIDES.items():
+    TRANSLATIONS.setdefault(_translation_language_key(_language), {}).update(_labels)
 
 
 def t(key):
@@ -213,6 +552,21 @@ def format_percent(value):
     return "N/A" if value is None or pd.isna(value) else f"{float(value) * 100:,.1f}%"
 
 
+def _card_number(value):
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if np.isfinite(number) else None
+
+
 def calculate_rsi(data, window=14):
     delta = data["Close"].diff()
     gain = delta.where(delta > 0, 0)
@@ -232,13 +586,206 @@ def black_scholes_gamma(spot, strike, time_to_expiry, rate, volatility):
     return norm.pdf(d1) / (spot * volatility * np.sqrt(time_to_expiry))
 
 
-@st.cache_data(ttl=900)
+@st.cache_data(ttl=300)
+def get_yfinance_quote_snapshot(ticker):
+    track_api_call("yfinance_quote")
+    ticker = normalize_ticker(ticker)
+    stock = yf.Ticker(ticker)
+    fast_info = {}
+    try:
+        fast_info = dict(stock.fast_info or {})
+    except Exception:
+        fast_info = {}
+    history = pd.DataFrame()
+    try:
+        history = stock.history(period="5d")
+    except Exception:
+        history = pd.DataFrame()
+    price = fast_info.get("lastPrice") or fast_info.get("last_price")
+    previous_close = fast_info.get("previousClose") or fast_info.get("previous_close")
+    if price is None and not history.empty and "Close" in history:
+        price = float(history["Close"].dropna().iloc[-1])
+    if previous_close is None and not history.empty and "Close" in history and len(history["Close"].dropna()) >= 2:
+        previous_close = float(history["Close"].dropna().iloc[-2])
+    change_pct = None
+    if price is not None and previous_close:
+        change_pct = (float(price) - float(previous_close)) / float(previous_close) * 100
+    return {
+        "ticker": ticker,
+        "name": COMPANY_NAMES.get(ticker, ticker),
+        "price": None if price is None else float(price),
+        "change_pct": change_pct,
+        "market_cap": fast_info.get("marketCap") or fast_info.get("market_cap"),
+        "revenue": None,
+        "net_margin": None,
+        "source": "yfinance",
+        "role": supply_chain_role(ticker),
+    }
+
+
+def _empty_card_financial_fields(ticker, source="unavailable"):
+    ticker = normalize_ticker(ticker)
+    return {
+        "ticker": ticker,
+        "name": COMPANY_NAMES.get(ticker, ticker),
+        "market_cap": None,
+        "revenue": None,
+        "net_margin": None,
+        "financial_source": source,
+    }
+
+
+def _fmp_card_first(ticker, endpoint, api_key):
+    track_api_call(f"fmp_card_{endpoint}")
+    response = requests.get(
+        f"{FMP_BASE_URL}/{endpoint}",
+        params={"symbol": ticker, "limit": 1, "apikey": api_key},
+        timeout=8,
+    )
+    response.raise_for_status()
+    data = response.json()
+    if not isinstance(data, list) or not data or not isinstance(data[0], dict):
+        return {}
+    return data[0]
+
+
+def _fmp_card_financial_fields(ticker):
+    ticker = normalize_ticker(ticker)
+    api_key = get_fmp_api_key()
+    payloads = {}
+    for endpoint in ("profile", "quote", "income-statement", "ratios"):
+        try:
+            payloads[endpoint] = _fmp_card_first(ticker, endpoint, api_key)
+        except Exception:
+            payloads[endpoint] = {}
+
+    profile = payloads["profile"]
+    quote = payloads["quote"]
+    if ticker == "SNDK" and not any("sandisk" in (item.get("companyName") or item.get("name") or "").lower() for item in (profile, quote)):
+        raise ValueError("FMP SNDK identity did not match SanDisk")
+
+    income = payloads["income-statement"]
+    ratios = payloads["ratios"]
+    revenue = _card_number(income.get("revenue"))
+    net_income = _card_number(income.get("netIncome"))
+    net_margin = _card_number(ratios.get("netProfitMargin"))
+    if net_margin is None and revenue:
+        net_margin = None if net_income is None else net_income / revenue
+
+    fields = {
+        "ticker": ticker,
+        "name": profile.get("companyName") or quote.get("name") or COMPANY_NAMES.get(ticker, ticker),
+        "market_cap": (
+            _card_number(quote.get("marketCap"))
+            or _card_number(profile.get("marketCap"))
+        ),
+        "revenue": revenue,
+        "net_margin": net_margin,
+        "financial_source": "FMP",
+    }
+    if fields["market_cap"] is None and fields["revenue"] is None and fields["net_margin"] is None and fields["name"] == COMPANY_NAMES.get(ticker, ticker):
+        raise ValueError("FMP returned no usable card financial fields")
+    return fields
+
+
+def _yfinance_card_financial_fields(ticker):
+    ticker = normalize_ticker(ticker)
+    track_api_call("yfinance_card_financial_fallback")
+    try:
+        info = yf.Ticker(ticker).info or {}
+    except Exception:
+        info = {}
+    return {
+        "ticker": ticker,
+        "name": info.get("longName") or info.get("shortName") or COMPANY_NAMES.get(ticker, ticker),
+        "market_cap": _card_number(info.get("marketCap")),
+        "revenue": _card_number(info.get("totalRevenue")),
+        "net_margin": _card_number(info.get("profitMargins")),
+        "financial_source": "yfinance fallback",
+    }
+
+
+@st.cache_data(ttl=CARD_FINANCIAL_TTL_SECONDS)
+def get_card_financial_fields(ticker):
+    track_cacheable_call()
+    ticker = normalize_ticker(ticker)
+    try:
+        fields = _fmp_card_financial_fields(ticker)
+        if any(fields.get(key) is None for key in ("market_cap", "revenue", "net_margin")):
+            fallback = _yfinance_card_financial_fields(ticker)
+            for key in ("market_cap", "revenue", "net_margin"):
+                if fields.get(key) is None:
+                    fields[key] = fallback.get(key)
+            if not fields.get("name") or fields["name"] == COMPANY_NAMES.get(ticker, ticker):
+                fields["name"] = fallback.get("name") or fields["name"]
+        return fields
+    except Exception:
+        try:
+            return _yfinance_card_financial_fields(ticker)
+        except Exception:
+            return _empty_card_financial_fields(ticker)
+
+
+@st.cache_data(ttl=300)
+def get_card_snapshot(ticker):
+    track_cacheable_call()
+    ticker = normalize_ticker(ticker)
+    try:
+        quote = get_yfinance_quote_snapshot(ticker)
+    except Exception:
+        quote = {
+            "ticker": ticker,
+            "name": COMPANY_NAMES.get(ticker, ticker),
+            "price": None,
+            "change_pct": None,
+            "market_cap": None,
+            "revenue": None,
+            "net_margin": None,
+            "source": "unavailable",
+            "role": supply_chain_role(ticker),
+        }
+    financials = get_card_financial_fields(ticker)
+    financial_source = financials.get("financial_source") or "unavailable"
+    return {
+        **quote,
+        "name": financials.get("name") or quote.get("name"),
+        "market_cap": financials.get("market_cap") if financials.get("market_cap") is not None else quote.get("market_cap"),
+        "revenue": financials.get("revenue"),
+        "net_margin": financials.get("net_margin"),
+        "source": f"{financial_source} financials + yfinance quote" if financial_source != "unavailable" else quote.get("source", "unavailable"),
+        "role": supply_chain_role(ticker),
+    }
+
+
+def _snapshot_from_yfinance_fallback(ticker):
+    quote = get_yfinance_quote_snapshot(ticker)
+    keys = (
+        "sector", "industry", "trailing_pe", "forward_pe", "price_to_book", "price_to_sales",
+        "ev_to_ebitda", "return_on_equity", "return_on_assets", "gross_margin",
+        "operating_margin", "free_cash_flow_margin", "current_ratio", "quick_ratio",
+        "debt_to_equity", "revenue_growth_yoy", "gross_profit_growth",
+        "operating_income_growth", "net_income_growth", "eps_growth", "analyst_target",
+        "analyst_target_high", "analyst_target_low", "analyst_upside_pct", "analyst_rating",
+        "next_earnings_date", "estimated_eps", "actual_eps", "eps_surprise",
+        "days_until_earnings",
+    )
+    return {**quote, **{key: None for key in keys}, "source": "yfinance fallback"}
+
+
+@st.cache_data(ttl=21600)
 def get_company_snapshot(ticker):
-    return {**get_fmp_company_snapshot(ticker), "role": SUPPLY_CHAIN_ROLES[ticker]}
+    track_cacheable_call()
+    try:
+        track_api_call("fmp_financial_snapshot")
+        return {**get_fmp_company_snapshot(ticker), "role": supply_chain_role(ticker)}
+    except Exception:
+        return _snapshot_from_yfinance_fallback(ticker)
 
 
-@st.cache_data(ttl=900)
+@st.cache_data(ttl=300)
 def get_technical_data(ticker, period="6mo"):
+    track_cacheable_call()
+    track_api_call("price_history")
     days = {"3mo": 100, "6mo": 190, "1y": 370, "2y": 740}.get(period, 190)
     data, source = fetch_historical_prices(ticker, date.today() - timedelta(days=days), date.today())
     if data.empty:
@@ -253,46 +800,160 @@ def get_technical_data(ticker, period="6mo"):
     return data
 
 
-@st.cache_data(ttl=900)
-def get_options_data(ticker):
+@st.cache_data(ttl=600)
+def get_option_expirations(ticker):
+    track_cacheable_call()
+    track_api_call("yfinance_option_expirations")
+    stock = yf.Ticker(ticker)
+    expirations = list(stock.options or [])
+    return sorted(str(expiration) for expiration in expirations if expiration)
+
+
+@st.cache_data(ttl=600)
+def get_option_open_interest_totals(ticker, expiry):
+    track_cacheable_call()
+    track_api_call("yfinance_option_chain")
+    try:
+        chain = yf.Ticker(ticker).option_chain(expiry)
+    except Exception:
+        return {"calls_rows": 0, "puts_rows": 0, "total_call_oi": 0.0, "total_put_oi": 0.0}
+    calls = chain.calls.copy() if chain.calls is not None else pd.DataFrame()
+    puts = chain.puts.copy() if chain.puts is not None else pd.DataFrame()
+    return {
+        "calls_rows": len(calls),
+        "puts_rows": len(puts),
+        "total_call_oi": float(_option_open_interest(calls).sum()),
+        "total_put_oi": float(_option_open_interest(puts).sum()),
+    }
+
+
+def select_default_option_expiry(ticker, expirations):
+    state_key = f"option_expiry_{ticker}"
+    previous = st.session_state.get(state_key)
+    if previous in expirations:
+        return expirations.index(previous)
+    today_text = date.today().isoformat()
+    future_expirations = [(index, expiration) for index, expiration in enumerate(expirations) if expiration >= today_text]
+    for index, expiration in future_expirations:
+        totals = get_option_open_interest_totals(ticker, expiration)
+        if totals["total_call_oi"] > 0 or totals["total_put_oi"] > 0:
+            return index
+    for index, _ in future_expirations:
+        return index
+    return 0
+
+
+def _option_open_interest(frame):
+    if frame is None or frame.empty or "openInterest" not in frame.columns:
+        return pd.Series(dtype=float)
+    return pd.to_numeric(frame["openInterest"], errors="coerce").fillna(0)
+
+
+def _normalize_option_chain_frame(frame):
+    if frame is None or frame.empty:
+        return pd.DataFrame()
+    normalized = frame.copy()
+    for field in ("openInterest", "impliedVolatility", "strike", "volume", "lastPrice", "bid", "ask", "gamma"):
+        if field in normalized.columns:
+            normalized[field] = pd.to_numeric(normalized[field], errors="coerce")
+    if "openInterest" in normalized.columns:
+        normalized["openInterest"] = normalized["openInterest"].fillna(0)
+    return normalized
+
+
+def _option_missing_reasons(calls, puts, gex_by_strike, current_price_available=True, chain_available=True):
+    reasons = []
+    if current_price_available and not chain_available:
+        reasons.append("option_price_available_chain_unavailable")
+    if calls.empty or puts.empty:
+        reasons.append("option_call_put_empty")
+    call_oi = _option_open_interest(calls)
+    put_oi = _option_open_interest(puts)
+    if (call_oi.empty and put_oi.empty) or (call_oi.sum() == 0 and put_oi.sum() == 0):
+        reasons.append("option_open_interest_missing")
+    has_usable_gamma = any(
+        "gamma" in frame.columns and (pd.to_numeric(frame["gamma"], errors="coerce").fillna(0) > 0).any()
+        for frame in (calls, puts) if frame is not None and not frame.empty
+    )
+    has_usable_iv = any(
+        "impliedVolatility" in frame.columns and (pd.to_numeric(frame["impliedVolatility"], errors="coerce").fillna(0) > 0).any()
+        for frame in (calls, puts) if frame is not None and not frame.empty
+    )
+    if not gex_by_strike and not (has_usable_gamma or has_usable_iv):
+        reasons.append("option_gamma_missing")
+    return reasons
+
+
+@st.cache_data(ttl=600)
+def get_options_data(ticker, expiry=None):
+    track_cacheable_call()
+    track_api_call("yfinance_options_data")
     stock = yf.Ticker(ticker)
     history = stock.history(period="1d")
-    expirations = stock.options
-    if history.empty or not expirations:
+    expirations = get_option_expirations(ticker)
+    if history.empty:
+        raise ValueError("No price data returned.")
+    if not expirations:
         raise ValueError("No options data returned.")
     current_price = float(history["Close"].iloc[-1])
-    exp_date = expirations[0]
-    chain = stock.option_chain(exp_date)
-    calls = chain.calls.fillna(0)
-    puts = chain.puts.fillna(0)
-    total_call_oi = float(calls["openInterest"].sum())
-    total_put_oi = float(puts["openInterest"].sum())
-    calls_above = calls[calls["strike"] > current_price]
-    puts_below = puts[puts["strike"] < current_price]
+    exp_date = expiry if expiry in expirations else expirations[0]
+    try:
+        chain = stock.option_chain(exp_date)
+    except Exception:
+        return {
+            "current_price": current_price,
+            "exp_date": exp_date,
+            "expirations": expirations,
+            "pc_ratio": None,
+            "call_wall": None,
+            "put_wall": None,
+            "max_pain": None,
+            "net_gex": None,
+            "calls_near_gex": 0,
+            "total_call_oi": 0,
+            "total_put_oi": 0,
+            "calls": pd.DataFrame(),
+            "puts": pd.DataFrame(),
+            "gex_by_strike": {},
+            "missing_reasons": ["option_price_available_chain_unavailable"],
+            "source": "yfinance",
+        }
+    calls = _normalize_option_chain_frame(chain.calls)
+    puts = _normalize_option_chain_frame(chain.puts)
+    total_call_oi = float(_option_open_interest(calls).sum())
+    total_put_oi = float(_option_open_interest(puts).sum())
+    calls_above = calls[(calls["strike"] > current_price) & (calls["openInterest"] > 0)] if {"strike", "openInterest"}.issubset(calls.columns) else pd.DataFrame()
+    puts_below = puts[(puts["strike"] < current_price) & (puts["openInterest"] > 0)] if {"strike", "openInterest"}.issubset(puts.columns) else pd.DataFrame()
     call_wall = calls_above.loc[calls_above["openInterest"].idxmax(), "strike"] if not calls_above.empty else None
     put_wall = puts_below.loc[puts_below["openInterest"].idxmax(), "strike"] if not puts_below.empty else None
-    strikes = sorted(set(calls["strike"].tolist() + puts["strike"].tolist()))
+    call_strikes = calls["strike"].dropna().tolist() if "strike" in calls else []
+    put_strikes = puts["strike"].dropna().tolist() if "strike" in puts else []
+    strikes = sorted(set(call_strikes + put_strikes))
     pain = {}
-    for strike in strikes:
-        call_loss = ((calls["strike"] - strike).clip(lower=0) * calls["openInterest"]).sum()
-        put_loss = ((strike - puts["strike"]).clip(lower=0) * puts["openInterest"]).sum()
-        pain[strike] = call_loss + put_loss
+    if total_call_oi > 0 or total_put_oi > 0:
+        for strike in strikes:
+            call_loss = ((calls["strike"] - strike).clip(lower=0) * calls["openInterest"]).sum() if {"strike", "openInterest"}.issubset(calls.columns) else 0
+            put_loss = ((strike - puts["strike"]).clip(lower=0) * puts["openInterest"]).sum() if {"strike", "openInterest"}.issubset(puts.columns) else 0
+            pain[strike] = call_loss + put_loss
     total_gex = {}
-    for expiration in expirations[:2]:
-        try:
-            exp_chain = stock.option_chain(expiration)
-            time_to_expiry = max((datetime.strptime(expiration, "%Y-%m-%d") - datetime.now()).days / 365, 0.001)
-            for option_type, direction in ((exp_chain.calls, 1), (exp_chain.puts, -1)):
-                for _, row in option_type.fillna(0).iterrows():
-                    strike, volatility, oi = row["strike"], row["impliedVolatility"], row["openInterest"]
-                    if volatility > 0 and oi > 0:
-                        gamma = black_scholes_gamma(current_price, strike, time_to_expiry, 0.05, volatility)
-                        total_gex[strike] = total_gex.get(strike, 0) + direction * gamma * oi * 100 * current_price
-        except Exception:
-            continue
+    time_to_expiry = max((datetime.strptime(exp_date, "%Y-%m-%d") - datetime.now()).days / 365, 0.001)
+    for option_type, direction in ((calls, 1), (puts, -1)):
+        for _, row in option_type.iterrows():
+            strike = row.get("strike")
+            oi = row.get("openInterest", 0)
+            gamma = row.get("gamma")
+            volatility = row.get("impliedVolatility")
+            if pd.isna(strike) or pd.isna(oi) or oi <= 0:
+                continue
+            if (gamma is None or pd.isna(gamma) or gamma == 0) and not pd.isna(volatility) and volatility > 0:
+                gamma = black_scholes_gamma(current_price, strike, time_to_expiry, 0.05, volatility)
+            if gamma is not None and not pd.isna(gamma) and gamma > 0:
+                total_gex[strike] = total_gex.get(strike, 0) + direction * gamma * oi * 100 * current_price
+    missing_reasons = _option_missing_reasons(calls, puts, total_gex)
     return {
         "current_price": current_price,
         "exp_date": exp_date,
+        "expirations": expirations,
         "pc_ratio": None if total_call_oi == 0 else total_put_oi / total_call_oi,
         "call_wall": call_wall,
         "put_wall": put_wall,
@@ -304,7 +965,204 @@ def get_options_data(ticker):
         "calls": calls,
         "puts": puts,
         "gex_by_strike": total_gex,
+        "missing_reasons": missing_reasons,
+        "source": "yfinance",
     }
+
+
+def _options_ai_language(language):
+    language_text = str(language or "")
+    language_lower = language_text.lower()
+    if language_text == "\u4e2d\u6587" or language_lower in ("zh", "chinese"):
+        return "\u4e2d\u6587"
+    if language_text == "Espa\u00f1ol" or language_lower in ("es", "spanish", "espa\u00f1ol") or language_text.startswith("Espa"):
+        return "Espa\u00f1ol"
+    if language_text != "English":
+        return "\u4e2d\u6587"
+    return "English"
+
+
+def _options_metric_text(value, kind="number"):
+    if value is None or pd.isna(value):
+        return "unavailable"
+    if kind == "money":
+        return format_money(value, 2)
+    if kind == "money0":
+        return format_money(value, 0)
+    if kind == "ratio":
+        return format_ratio(value)
+    if kind == "integer":
+        return f"{float(value):,.0f}"
+    return f"{float(value):,.2f}"
+
+
+def _options_metric_payload(ticker, opt):
+    return {
+        "ticker": ticker,
+        "current_price": opt.get("current_price"),
+        "put_call_open_interest_ratio": opt.get("pc_ratio"),
+        "call_open_interest": opt.get("total_call_oi"),
+        "put_open_interest": opt.get("total_put_oi"),
+        "max_pain": opt.get("max_pain"),
+        "net_gex": opt.get("net_gex"),
+        "call_wall": opt.get("call_wall"),
+        "put_wall": opt.get("put_wall"),
+        "current_expiry_date": opt.get("exp_date"),
+    }
+
+
+def _options_structure_view(metrics):
+    pc_ratio = metrics.get("put_call_open_interest_ratio")
+    net_gex = metrics.get("net_gex")
+    if net_gex is not None and not pd.isna(net_gex) and net_gex < 0:
+        return "volatile"
+    if pc_ratio is not None and not pd.isna(pc_ratio):
+        if pc_ratio >= 1.3:
+            return "bearish"
+        if pc_ratio <= 0.7:
+            return "bullish"
+    return "neutral"
+
+
+def _price_distance_pct(price, level):
+    if price is None or level is None or pd.isna(price) or pd.isna(level) or float(price) == 0:
+        return None
+    return abs(float(price) - float(level)) / abs(float(price))
+
+
+def build_options_ai_prompt(ticker, metrics, language):
+    language = _options_ai_language(language)
+    if language == "\u4e2d\u6587":
+        language_instruction = (
+            "\u7528\u7b80\u6d01\u4f46\u5177\u4f53\u7684\u4e2d\u6587\u8f93\u51fa\u3002\u4e0d\u8981\u53ea\u8bf4\u770b\u6da8\u6216\u770b\u8dcc\uff0c"
+            "\u5fc5\u987b\u89e3\u91ca\u539f\u56e0\u3001\u6307\u51fa\u5173\u952e\u4ef7\u4f4d\uff0c\u5e76\u8bf4\u660e\u8d1f GEX \u7684\u542b\u4e49\u3002"
+        )
+    elif language == "Espa\u00f1ol":
+        language_instruction = "Write the entire summary in concise Spanish."
+    else:
+        language_instruction = "Write the entire summary in concise English."
+    return f"""
+You are an options market structure analyst. Use only the supplied metrics. Do not invent or infer missing values.
+If a metric is missing, say it is unavailable. Do not provide financial advice.
+{language_instruction}
+
+Ticker: {ticker}
+Options metrics:
+{json.dumps(metrics, indent=2, default=str)}
+
+Write one concise paragraph that covers:
+1. Current price.
+2. Put/Call open interest ratio.
+3. Call open interest and put open interest.
+4. Max pain.
+5. Net GEX.
+6. Call wall.
+7. Put wall.
+8. Current expiry date.
+9. Whether the options structure looks bullish, bearish, neutral, or volatile.
+10. Whether negative GEX may amplify volatility.
+11. Whether the call wall may act as upside resistance.
+12. Whether the put wall may act as downside support or downside magnet.
+13. Whether price is close to max pain.
+14. Key levels traders should watch.
+End with a clear risk disclaimer that this is not financial advice.
+"""
+
+
+def build_options_rule_based_summary(ticker, metrics, language):
+    language = _options_ai_language(language)
+    price = metrics.get("current_price")
+    pc_ratio = metrics.get("put_call_open_interest_ratio")
+    call_oi = metrics.get("call_open_interest")
+    put_oi = metrics.get("put_open_interest")
+    max_pain = metrics.get("max_pain")
+    net_gex = metrics.get("net_gex")
+    call_wall = metrics.get("call_wall")
+    put_wall = metrics.get("put_wall")
+    expiry = metrics.get("current_expiry_date") or "unavailable"
+    view = _options_structure_view(metrics)
+    max_pain_distance = _price_distance_pct(price, max_pain)
+    max_pain_close = max_pain_distance is not None and max_pain_distance <= 0.03
+    key_levels = [
+        _options_metric_text(price, "money"),
+        _options_metric_text(max_pain, "money0"),
+        _options_metric_text(call_wall, "money0"),
+        _options_metric_text(put_wall, "money0"),
+    ]
+    key_levels = ", ".join(dict.fromkeys(level for level in key_levels if level != "unavailable")) or "unavailable"
+
+    if language == "\u4e2d\u6587":
+        view_text = {
+            "bullish": "\u504f\u770b\u6da8",
+            "bearish": "\u504f\u770b\u8dcc",
+            "neutral": "\u504f\u4e2d\u6027",
+            "volatile": "\u504f\u9ad8\u6ce2\u52a8",
+        }[view]
+        gex_text = (
+            f"\u51c0 GEX \u4e3a {_options_metric_text(net_gex, 'money0')}\uff0c\u5c5e\u4e8e\u8d1f Gamma \u73af\u5883\uff0c\u505a\u5e02\u5546\u5bf9\u51b2\u53ef\u80fd\u653e\u5927\u4ef7\u683c\u6ce2\u52a8\u3002"
+            if net_gex is not None and not pd.isna(net_gex) and net_gex < 0
+            else f"\u51c0 GEX \u4e3a {_options_metric_text(net_gex, 'money0')}\uff0c\u8d1f GEX \u653e\u5927\u6ce2\u52a8\u7684\u4fe1\u53f7\u4e0d\u660e\u663e\u3002"
+        )
+        pain_text = "\u63a5\u8fd1" if max_pain_close else "\u4e0d\u63a5\u8fd1"
+        return (
+            f"\u5f53\u524d {ticker} \u5230\u671f\u65e5 {expiry} \u7684\u671f\u6743\u7ed3\u6784{view_text}\u3002"
+            f"\u73b0\u4ef7\u4e3a {_options_metric_text(price, 'money')}\uff0cPut/Call OI \u6bd4\u7387\u4e3a {_options_metric_text(pc_ratio, 'ratio')}\uff0c"
+            f"\u770b\u6da8\u672a\u5e73\u4ed3\u91cf\u4e3a {_options_metric_text(call_oi, 'integer')}\uff0c\u770b\u8dcc\u672a\u5e73\u4ed3\u91cf\u4e3a {_options_metric_text(put_oi, 'integer')}\u3002"
+            f"{gex_text}\u6700\u5927\u75db\u70b9\u5728 {_options_metric_text(max_pain, 'money0')}\uff0c\u5f53\u524d\u4ef7\u683c{pain_text}\u6700\u5927\u75db\u70b9\u3002"
+            f"Call wall \u5728 {_options_metric_text(call_wall, 'money0')}\uff0c\u53ef\u80fd\u662f\u4e0a\u65b9\u538b\u529b\u533a\uff1bPut wall \u5728 {_options_metric_text(put_wall, 'money0')}\uff0c\u53ef\u80fd\u662f\u4e0b\u65b9\u652f\u6491\u6216\u4e0b\u884c\u5438\u5f15\u533a\u3002"
+            f"\u5173\u952e\u4ef7\u4f4d\u5173\u6ce8\uff1a{key_levels}\u3002\u98ce\u9669\u63d0\u793a\uff1a\u8fd9\u4e0d\u662f\u6295\u8d44\u5efa\u8bae\u3002"
+        )
+
+    if language == "Espa\u00f1ol":
+        view_text = {"bullish": "alcista", "bearish": "bajista", "neutral": "neutral", "volatile": "vol\u00e1til"}[view]
+        gex_text = (
+            f"El GEX neto es {_options_metric_text(net_gex, 'money0')}, un entorno de gamma negativa que puede amplificar la volatilidad por coberturas de creadores de mercado."
+            if net_gex is not None and not pd.isna(net_gex) and net_gex < 0
+            else f"El GEX neto es {_options_metric_text(net_gex, 'money0')}; la se\u00f1al de gamma negativa que amplifica volatilidad no es clara."
+        )
+        pain_text = "cerca de" if max_pain_close else "lejos de"
+        return (
+            f"La estructura de opciones de {ticker} para el vencimiento {expiry} parece {view_text}. "
+            f"El precio actual es {_options_metric_text(price, 'money')}, el ratio put/call de inter\u00e9s abierto es {_options_metric_text(pc_ratio, 'ratio')}, "
+            f"con inter\u00e9s abierto call de {_options_metric_text(call_oi, 'integer')} y put de {_options_metric_text(put_oi, 'integer')}. "
+            f"{gex_text} El m\u00e1ximo dolor est\u00e1 en {_options_metric_text(max_pain, 'money0')}, y el precio est\u00e1 {pain_text} ese nivel. "
+            f"El call wall en {_options_metric_text(call_wall, 'money0')} puede actuar como resistencia al alza; el put wall en {_options_metric_text(put_wall, 'money0')} puede actuar como soporte o im\u00e1n bajista. "
+            f"Niveles clave a vigilar: {key_levels}. Aviso de riesgo: esto no es asesoramiento financiero."
+        )
+
+    gex_text = (
+        f"Net GEX is {_options_metric_text(net_gex, 'money0')}, a negative gamma setup where dealer hedging may amplify volatility."
+        if net_gex is not None and not pd.isna(net_gex) and net_gex < 0
+        else f"Net GEX is {_options_metric_text(net_gex, 'money0')}; the negative-GEX volatility amplification signal is not clear."
+    )
+    pain_text = "close to" if max_pain_close else "not close to"
+    return (
+        f"{ticker} options structure for expiry {expiry} looks {view}. "
+        f"Current price is {_options_metric_text(price, 'money')}, the put/call open interest ratio is {_options_metric_text(pc_ratio, 'ratio')}, "
+        f"with call open interest of {_options_metric_text(call_oi, 'integer')} and put open interest of {_options_metric_text(put_oi, 'integer')}. "
+        f"{gex_text} Max pain is {_options_metric_text(max_pain, 'money0')}, and price is {pain_text} max pain. "
+        f"The call wall at {_options_metric_text(call_wall, 'money0')} may act as upside resistance; the put wall at {_options_metric_text(put_wall, 'money0')} may act as downside support or a downside magnet. "
+        f"Key levels to watch: {key_levels}. Risk disclaimer: this is not financial advice."
+    )
+
+
+@st.cache_data(ttl=6 * 60 * 60, show_spinner=False)
+def generate_options_ai_summary(ticker, expiry, metrics, language, summary_version="options_ai_summary_v1"):
+    fallback = build_options_rule_based_summary(ticker, metrics, language)
+    try:
+        client = get_openai_client()
+    except Exception:
+        return fallback
+    try:
+        prompt = build_options_ai_prompt(ticker, metrics, language)
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+        )
+        summary = (response.choices[0].message.content or "").strip()
+        return summary or fallback
+    except Exception:
+        return fallback
 
 
 def render_snapshot_card(container, snapshot):
@@ -336,6 +1194,8 @@ def render_metric_row(metrics):
 
 
 def filter_options_near_price(options, current_price, price_range=0.2):
+    if options is None or options.empty or "strike" not in options or "openInterest" not in options:
+        return pd.DataFrame()
     filtered = options[
         (options["strike"] >= current_price * (1 - price_range))
         & (options["strike"] <= current_price * (1 + price_range))
@@ -345,6 +1205,9 @@ def filter_options_near_price(options, current_price, price_range=0.2):
 
 def render_option_chain_chart(ticker, option_type, options, current_price, exp_date, color):
     filtered = filter_options_near_price(options, current_price)
+    if filtered.empty:
+        st.warning(t("option_call_put_empty"))
+        return
     fig = go.Figure(go.Bar(
         x=filtered["strike"],
         y=filtered["openInterest"],
@@ -359,10 +1222,10 @@ def render_option_chain_chart(ticker, option_type, options, current_price, exp_d
         xaxis_title=t("strike"),
         yaxis_title=t("open_interest"),
     )
-    st.plotly_chart(fig, use_container_width=True, key=f"{ticker}_{option_type.lower()}_options")
+    st.plotly_chart(fig, use_container_width=True, key=f"{ticker}_{exp_date}_{option_type.lower()}_options")
 
 
-def render_gex_chart(ticker, gex_by_strike, current_price):
+def render_gex_chart(ticker, gex_by_strike, current_price, exp_date):
     if not gex_by_strike:
         st.warning(f"{ticker} {t('gex_chart_unavailable')}")
         return
@@ -377,13 +1240,13 @@ def render_gex_chart(ticker, gex_by_strike, current_price):
         xaxis_title=t("strike"),
         yaxis_title=t("net_gex"),
     )
-    st.plotly_chart(fig, use_container_width=True, key=f"{ticker}_gex")
+    st.plotly_chart(fig, use_container_width=True, key=f"{ticker}_{exp_date}_gex")
 
 
 def render_technical_section():
     st.caption(t("technical_caption"))
-    for ticker in WATCHLIST:
-        with st.expander(f"{ticker} | {COMPANY_NAMES[ticker]}", expanded=ticker == "NVDA"):
+    for ticker in load_watchlist():
+        with st.expander(f"{ticker} | {company_name(ticker)}", expanded=ticker == "NVDA"):
             try:
                 data = get_technical_data(ticker)
                 rsi = float(data["RSI"].iloc[-1])
@@ -402,10 +1265,40 @@ def render_technical_section():
 
 def render_options_section():
     st.caption(t("options_caption"))
-    for ticker in WATCHLIST:
-        with st.expander(f"{ticker} | {COMPANY_NAMES[ticker]} Gamma Exposure", expanded=ticker == "NVDA"):
-            try:
-                opt = get_options_data(ticker)
+    watchlist = load_watchlist()
+    if not watchlist:
+        st.warning(t("options_unavailable"))
+        return
+    ticker = st.selectbox(t("select_ticker"), watchlist, key="options_selected_ticker")
+    with st.spinner("Loading options data..."):
+        try:
+            expirations = get_option_expirations(ticker)
+            if not expirations:
+                st.warning(t("option_expirations_not_found"))
+                return
+            previous = st.session_state.get(f"option_expiry_{ticker}")
+            today_text = date.today().isoformat()
+            default_expiry = previous if previous in expirations else next(
+                (expiration for expiration in expirations if expiration >= today_text),
+                expirations[0],
+            )
+            selected_expiry = st.selectbox(
+                t("option_expiry"),
+                expirations,
+                index=expirations.index(default_expiry),
+                key=f"option_expiry_{ticker}",
+            )
+            st.caption(f"{t('current_expiry')}: {selected_expiry}")
+            opt = get_options_data(ticker, selected_expiry)
+        except Exception as exc:
+            st.warning(f"{ticker} {t('options_unavailable')}: {exc}")
+            return
+    try:
+                st.caption(
+                    f"calls rows: {len(opt['calls'])} | puts rows: {len(opt['puts'])} | "
+                    f"call OI: {opt['total_call_oi']:,.0f} | put OI: {opt['total_put_oi']:,.0f} | "
+                    f"expiry: {opt['exp_date']} | source: {opt.get('source', 'N/A')}"
+                )
                 render_metric_row([
                     (t("price"), format_money(opt["current_price"], 2)),
                     (t("put_call_ratio"), format_ratio(opt["pc_ratio"])),
@@ -421,24 +1314,60 @@ def render_options_section():
                     regime = t("positive_gex")
                 else:
                     regime = t("negative_gex")
-                st.info(f"{t('gamma_squeeze_risk')}: {squeeze}. {regime} {t('nearest_expiration')}: {opt['exp_date']}.")
+                st.info(f"{t('gamma_squeeze_risk')}: {squeeze}. {regime} {t('current_expiry')}: {opt['exp_date']}.")
+                if "option_open_interest_missing" in opt.get("missing_reasons", []):
+                    st.warning(f"{t('option_open_interest_missing')}. {t('option_expiry')}: {selected_expiry}.")
+                for reason in opt.get("missing_reasons", []):
+                    if reason == "option_open_interest_missing":
+                        continue
+                    st.warning(t(reason))
+                st.markdown(f"#### {t('options_ai_summary')}")
+                st.caption(t("options_ai_summary_disclaimer"))
+                summary_language = st.session_state.get("language", "English")
+                summary_metrics = _options_metric_payload(ticker, opt)
+                summary_cache_key = hashlib.sha256(json.dumps(
+                    {
+                        "ticker": ticker,
+                        "expiry": opt["exp_date"],
+                        "language": summary_language,
+                        "metrics": summary_metrics,
+                    },
+                    sort_keys=True,
+                    default=str,
+                ).encode("utf-8")).hexdigest()
+                summary_state_key = f"options_ai_summary_{summary_cache_key}"
+                if st.button(t("generate_options_ai_summary"), key=f"generate_options_ai_summary_{ticker}_{opt['exp_date']}"):
+                    st.session_state[summary_state_key] = generate_options_ai_summary(
+                        ticker,
+                        opt["exp_date"],
+                        summary_metrics,
+                        summary_language,
+                    )
+                if st.session_state.get(summary_state_key):
+                    st.info(st.session_state[summary_state_key])
+                else:
+                    st.caption(t("options_ai_summary_idle"))
                 chart_columns = st.columns(2)
                 with chart_columns[0]:
                     render_option_chain_chart(ticker, "Call", opt["calls"], opt["current_price"], opt["exp_date"], "#22c55e")
                 with chart_columns[1]:
                     render_option_chain_chart(ticker, "Put", opt["puts"], opt["current_price"], opt["exp_date"], "#ef4444")
-                render_gex_chart(ticker, opt["gex_by_strike"], opt["current_price"])
-            except Exception as exc:
-                st.warning(f"{ticker} {t('options_unavailable')}: {exc}")
+                render_gex_chart(ticker, opt["gex_by_strike"], opt["current_price"], opt["exp_date"])
+    except Exception as exc:
+        st.warning(f"{ticker} {t('options_unavailable')}: {exc}")
 
 
-def render_value_section(snapshots):
+def render_value_section(snapshots=None):
     st.caption(t("value_caption"))
-    for ticker in WATCHLIST:
-        snapshot = snapshots.get(ticker)
-        with st.expander(f"{ticker} | {snapshot['name'] if snapshot else COMPANY_NAMES[ticker]}", expanded=ticker == "NVDA"):
-            st.markdown(f"**{ticker} | {COMPANY_NAMES[ticker]}**")
-            st.caption(SUPPLY_CHAIN_ROLES[ticker])
+    for ticker in load_watchlist():
+        snapshot = None
+        try:
+            snapshot = get_company_snapshot(ticker)
+        except Exception:
+            snapshot = (snapshots or {}).get(ticker)
+        with st.expander(f"{ticker} | {company_name(ticker, snapshot)}", expanded=ticker == "NVDA"):
+            st.markdown(f"**{ticker} | {company_name(ticker, snapshot)}**")
+            st.caption(supply_chain_role(ticker))
             if not snapshot:
                 st.write(t("valuation_unavailable"))
                 continue
@@ -477,23 +1406,36 @@ def render_value_section(snapshots):
             ])
 
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=1800)
 def get_cached_company_news(ticker, limit=5):
-    return fetch_company_news(ticker, limit)
+    track_cacheable_call()
+    track_api_call("fmp_company_news")
+    try:
+        return fetch_company_news(ticker, limit)
+    except Exception:
+        return []
 
 
 @st.cache_data(ttl=1800)
 def get_cached_watchlist_news(tickers, limit_per_ticker=20):
-    return [
-        item
-        for ticker in tickers
-        for item in fetch_company_news(ticker, limit_per_ticker)
-    ]
+    track_cacheable_call()
+    results = []
+    for ticker in tickers:
+        try:
+            results.extend(get_cached_company_news(ticker, limit_per_ticker))
+        except Exception:
+            continue
+    return results
 
 
 @st.cache_data(ttl=1800)
 def get_cached_market_news(limit=150):
-    return fetch_general_news(limit)
+    track_cacheable_call()
+    track_api_call("fmp_market_news")
+    try:
+        return fetch_general_news(limit)
+    except Exception:
+        return []
 
 
 def _format_yfinance_datetime(value):
@@ -546,6 +1488,8 @@ def _normalize_yfinance_news_item(item, ticker):
 
 @st.cache_data(ttl=1800)
 def get_cached_yahoo_news(ticker, limit=10):
+    track_cacheable_call()
+    track_api_call("yfinance_news")
     ticker = ticker.upper()
     stock = yf.Ticker(ticker)
     raw_news = []
@@ -572,7 +1516,252 @@ def get_cached_yahoo_news(ticker, limit=10):
 
 @st.cache_data(ttl=1800)
 def get_cached_watchlist_yahoo_news(tickers, limit_per_ticker=10):
-    return {ticker: get_cached_yahoo_news(ticker, limit_per_ticker) for ticker in tickers}
+    track_cacheable_call()
+    news = {}
+    for ticker in tickers:
+        try:
+            news[ticker] = get_cached_yahoo_news(ticker, limit_per_ticker)
+        except Exception:
+            news[ticker] = []
+    return news
+
+
+def _match_trendforce_ticker(title, summary):
+    text = f"{title or ''} {summary or ''}".lower()
+    keyword_map = (
+        ("MU", ("micron", "\u7f8e\u5149", "dram", "hbm", "nand", "\u5b58\u50a8\u5668", "\u8bb0\u5fc6\u4f53", "\u5185\u5b58")),
+        ("SNDK", ("sandisk", "\u95ea\u8fea", "nand", "flash", "ssd", "\u95ea\u5b58")),
+        ("NVDA", ("nvidia", "\u82f1\u4f1f\u8fbe", "gpu", "ai\u670d\u52a1\u5668", "ai server", "\u52a0\u901f\u5668")),
+        ("TSM", ("tsmc", "\u53f0\u79ef\u7535", "\u6676\u5706\u4ee3\u5de5", "\u5148\u8fdb\u5236\u7a0b", "wafer", "foundry")),
+        ("LITE", ("lumentum", "\u5149\u6a21\u5757", "\u5149\u901a\u4fe1", "\u5149\u6536\u53d1\u5668", "\u5149\u5b66", "photonics", "transceiver")),
+        ("RKLB", ("\u536b\u661f", "\u592a\u7a7a", "\u706b\u7bad", "satellite", "space", "rocket")),
+    )
+    for ticker, keywords in keyword_map:
+        if any(keyword.lower() in text for keyword in keywords):
+            return ticker
+    return "SEMI"
+
+
+def _clean_trendforce_text(value):
+    value = html.unescape(str(value or ""))
+    value = re.sub(r"(?is)<[^>]+>", " ", value)
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def _extract_trendforce_date(text):
+    text = _clean_trendforce_text(text)
+    match = re.search(r"(20\d{2})[-/.年](\d{1,2})[-/.月](\d{1,2})日?", text)
+    if match:
+        year, month, day = match.groups()
+        return f"{int(year):04d}-{int(month):02d}-{int(day):02d}"
+    match = re.search(
+        r"(\d{1,2})\s+"
+        r"(January|February|March|April|May|June|July|August|September|October|November|December)"
+        r"\s+(20\d{2})",
+        text,
+        re.IGNORECASE,
+    )
+    if not match:
+        return ""
+    day, month_name, year = match.groups()
+    month = {
+        "january": 1, "february": 2, "march": 3, "april": 4, "may": 5, "june": 6,
+        "july": 7, "august": 8, "september": 9, "october": 10, "november": 11, "december": 12,
+    }[month_name.lower()]
+    return f"{int(year):04d}-{int(month):02d}-{int(day):02d}"
+
+
+def _is_trendforce_article_url(url):
+    return re.search(r"/presscenter/news/\d{8}-\d+\.html", url or "", re.IGNORECASE) is not None
+
+
+def _extract_trendforce_category(text):
+    text = _clean_trendforce_text(text)
+    for category in ("\u534a\u5bfc\u4f53", "\u65b0\u5174\u79d1\u6280", "Semiconductors", "Emerging Technologies"):
+        if category in text:
+            return category
+    return "\u4ea7\u4e1a\u6d1e\u5bdf"
+
+
+def _build_trendforce_item(title, url, published_date="", category="", summary=""):
+    title = _clean_trendforce_text(title)
+    summary = _clean_trendforce_text(summary) or title
+    if not title or not url:
+        return None
+    ticker = _match_trendforce_ticker(title, summary)
+    return {
+        "title": title,
+        "publishedDate": published_date or "",
+        "published_date": published_date or "",
+        "category": category or "\u4ea7\u4e1a\u6d1e\u5bdf",
+        "site": "TrendForce",
+        "source": "TrendForce",
+        "publisher": "TrendForce\u96c6\u90a6\u54a8\u8be2",
+        "ticker": ticker,
+        "related_ticker": ticker,
+        "related_tickers": ticker,
+        "summary": summary,
+        "text": summary,
+        "url": url,
+        "sentiment": "\u4e2d\u6027",
+        "credibility": "TrendForce",
+    }
+
+
+def _trendforce_items_from_soup(page_html, base_url, homepage=False):
+    try:
+        from bs4 import BeautifulSoup
+    except Exception:
+        return None
+
+    soup = BeautifulSoup(page_html, "html.parser")
+    roots = []
+    if homepage:
+        for heading in soup.find_all(["h2", "h3"], string=re.compile(r"\u4ea7\u4e1a\u6d1e\u5bdf")):
+            node = heading.parent
+            while node and getattr(node, "name", None) not in ("body", "html"):
+                article_links = [
+                    link for link in node.find_all("a", href=True)
+                    if _is_trendforce_article_url(urljoin(base_url, link.get("href")))
+                ]
+                if len(article_links) >= 3:
+                    roots = [node]
+                    break
+                node = node.parent
+            if roots:
+                break
+    if not roots:
+        roots = [soup]
+
+    items = []
+    seen = set()
+    for root in roots:
+        for link in root.find_all("a", href=True):
+            title = _clean_trendforce_text(link.get("title") or link.get_text(" ", strip=True))
+            href = link.get("href")
+            url = urljoin(base_url, href)
+            if not _is_trendforce_article_url(url):
+                continue
+            if not title or len(title) < 8:
+                continue
+            if "trendforce." not in url.lower() and href.startswith(("http://", "https://")):
+                continue
+            if not re.search(r"/presscenter|/news|/article|/insight|NewsID=|id=", url, re.IGNORECASE):
+                if not re.search(r"TrendForce|集邦|DRAM|HBM|NAND|半导体|晶圆|存储|记忆体|内存|AI", title, re.IGNORECASE):
+                    continue
+            nearby = ""
+            parent = link
+            for _ in range(3):
+                parent = getattr(parent, "parent", None)
+                if not parent:
+                    break
+                nearby = _clean_trendforce_text(parent.get_text(" ", strip=True))
+                if len(nearby) > len(title) + 10:
+                    break
+            published_date = _extract_trendforce_date(nearby)
+            category = _extract_trendforce_category(nearby)
+            summary = nearby.replace(title, " ", 1).strip()
+            summary = re.sub(r"^\W*\d{4}[-/.年]\d{1,2}[-/.月]\d{1,2}日?\W*", "", summary).strip()
+            item = _build_trendforce_item(title, url, published_date, category, summary or title)
+            if item and item["url"] not in seen:
+                seen.add(item["url"])
+                items.append(item)
+    return items
+
+
+def _trendforce_items_from_regex(page_html, base_url):
+    cleaned_html = re.sub(r"(?is)<(script|style|noscript|svg).*?</\1>", " ", page_html or "")
+    anchors = re.findall(r"(?is)<a\b([^>]*?)href=[\"']([^\"']+)[\"']([^>]*)>(.*?)</a>", cleaned_html)
+    items = []
+    seen = set()
+    for before, href, after, body in anchors:
+        attrs = f"{before} {after}"
+        title_match = re.search(r"title=[\"']([^\"']+)[\"']", attrs, re.IGNORECASE)
+        title = _clean_trendforce_text(title_match.group(1) if title_match else body)
+        url = urljoin(base_url, href)
+        if not _is_trendforce_article_url(url):
+            continue
+        if not title or len(title) < 8:
+            continue
+        if not re.search(r"/presscenter|/news|/article|/insight|NewsID=|id=", url, re.IGNORECASE):
+            if not re.search(r"TrendForce|集邦|DRAM|HBM|NAND|半导体|晶圆|存储|记忆体|内存|AI", title, re.IGNORECASE):
+                continue
+        anchor_start = cleaned_html.find(href)
+        nearby = cleaned_html[max(0, anchor_start - 300):anchor_start + 800] if anchor_start >= 0 else body
+        published_date = _extract_trendforce_date(nearby)
+        item = _build_trendforce_item(title, url, published_date, _extract_trendforce_category(nearby), title)
+        if item and item["url"] not in seen:
+            seen.add(item["url"])
+            items.append(item)
+    return items
+
+
+def get_trendforce_news(limit=20):
+    track_api_call("trendforce_news")
+    limit = min(int(limit or 10), 10)
+    headers = {"User-Agent": "Mozilla/5.0"}
+    chinese_urls = [
+        "https://www.trendforce.cn",
+        "https://www.trendforce.cn/presscenter/news",
+        "https://www.trendforce.cn/presscenter/news/Semiconductors",
+        "https://www.trendforce.cn/presscenter",
+    ]
+    english_urls = [
+        "https://www.trendforce.com/presscenter/news",
+        "https://www.trendforce.com/presscenter/news/Semiconductors",
+        "https://www.trendforce.com/presscenter/rss.html",
+    ]
+
+    def fetch_html_items(url, homepage=False):
+        response = requests.get(url, headers=headers, timeout=6)
+        response.raise_for_status()
+        response.encoding = response.apparent_encoding or response.encoding
+        soup_items = _trendforce_items_from_soup(response.text, url, homepage=homepage)
+        return soup_items if soup_items is not None else _trendforce_items_from_regex(response.text, url)
+
+    for index, url in enumerate(chinese_urls):
+        try:
+            items = fetch_html_items(url, homepage=index == 0)
+            if items:
+                return items[:limit]
+        except Exception:
+            continue
+
+    for url in english_urls:
+        try:
+            response = requests.get(url, headers=headers, timeout=6)
+            response.raise_for_status()
+            if url.endswith("rss.html"):
+                feed = feedparser.parse(response.content)
+                items = []
+                for entry in feed.entries[:limit]:
+                    published_date = _extract_trendforce_date(entry.get("published") or entry.get("updated") or "")
+                    item = _build_trendforce_item(
+                        entry.get("title") or "",
+                        entry.get("link") or url,
+                        published_date,
+                        entry.get("category") or "Semiconductors",
+                        entry.get("summary") or entry.get("description") or entry.get("title") or "",
+                    )
+                    if item:
+                        items.append(item)
+                if items:
+                    return items[:limit]
+            else:
+                response.encoding = response.apparent_encoding or response.encoding
+                soup_items = _trendforce_items_from_soup(response.text, url, homepage=False)
+                items = soup_items if soup_items is not None else _trendforce_items_from_regex(response.text, url)
+                if items:
+                    return items[:limit]
+        except Exception:
+            continue
+    return []
+
+
+@st.cache_data(ttl=1800)
+def get_cached_trendforce_news(limit=20):
+    track_cacheable_call()
+    return get_trendforce_news(limit)
 
 
 def classify_news_sentiment(item):
@@ -591,7 +1780,7 @@ def _contains_news_keyword(text, keyword):
 
 
 def _news_sort_key(item):
-    return item.get("published_date") or ""
+    return item.get("published_date") or item.get("publishedDate") or ""
 
 
 def news_sentiment_label(sentiment):
@@ -606,7 +1795,7 @@ NEWS_SUMMARY_LABELS = {
 AI_SUMMARY_VERSION = "v3"
 AI_TRANSLATION_VERSION = "v1"
 AI_SENTIMENT_VERSION = "v1"
-AI_DETAILED_SUMMARY_VERSION = "v1"
+AI_DETAILED_SUMMARY_VERSION = "v2"
 NEWS_TRANSLATION_LABELS = {
     "English": "Full Translation",
     "\u4e2d\u6587": "\u5168\u6587\u7ffb\u8bd1",
@@ -784,11 +1973,13 @@ def _extract_article_text_from_html(page_html):
     return _clean_extracted_article_text(text)
 
 
-@st.cache_data(ttl=6 * 60 * 60)
+@st.cache_data(ttl=1800)
 def get_cached_yahoo_article_text(url):
+    track_cacheable_call()
     if not url:
         return ""
     try:
+        track_api_call("news_article_text")
         response = requests.get(
             url,
             timeout=8,
@@ -806,12 +1997,40 @@ def get_cached_yahoo_article_text(url):
         return ""
 
 
-def _yahoo_news_source_text(item):
-    article_text = get_cached_yahoo_article_text(item.get("url"))
-    fallback_text = "\n\n".join(
-        value for value in (item.get("title") or "", item.get("text") or "") if value
-    )
+@st.cache_data(ttl=1800)
+def get_cached_news_article_text(source, url):
+    track_cacheable_call()
+    if not url:
+        return ""
+    return get_cached_yahoo_article_text(url)
+
+
+def _news_item_source_name(item):
+    return item.get("source") or item.get("source_type") or item.get("site") or t("unknown_source")
+
+
+def _news_item_publisher(item):
+    return item.get("publisher") or item.get("site") or item.get("source_name") or t("unknown_publisher")
+
+
+def _news_item_summary_text(item):
+    return item.get("summary") or item.get("text") or item.get("description") or ""
+
+
+def _standard_news_source_text(item):
+    source = _news_item_source_name(item)
+    article_text = get_cached_news_article_text(source, item.get("url"))
+    parts = [
+        item.get("title") or "",
+        item.get("summary") or "",
+        item.get("text") or "",
+    ]
+    fallback_text = "\n\n".join(dict.fromkeys(value for value in parts if value))
     return article_text or fallback_text
+
+
+def _yahoo_news_source_text(item):
+    return _standard_news_source_text(item)
 
 
 def _parse_news_datetime(value):
@@ -890,50 +2109,22 @@ def _rule_based_yahoo_sentiment_score(text):
 
 @st.cache_data(ttl=7 * 24 * 60 * 60)
 def get_cached_yahoo_news_scores(ticker, title, url, summary, language, sentiment_version, publisher, published_date, article_text):
+    track_cacheable_call()
     article_text = _clean_extracted_article_text(article_text, max_chars=9000)
     credibility_score = _rule_based_yahoo_credibility_score(
         ticker, title, url, summary, publisher, published_date, article_text
     )
-    source_text = "\n\n".join(value for value in (title or "", summary or "", article_text or "") if value)
     fallback = {
         "credibility_score": credibility_score,
-        "sentiment_score": 0.0,
+        "sentiment_score": _rule_based_yahoo_sentiment_score(
+            "\n\n".join(value for value in (title or "", summary or "", article_text or "") if value)
+        ),
     }
-    if not source_text:
-        return fallback
-    try:
-        client = get_openai_client()
-    except Exception:
-        return fallback
-
-    language = _news_summary_language(language)
-    prompt = (
-        "Score this Yahoo/yfinance stock news item for directional sentiment toward the supplied ticker. "
-        "Use only the title, summary, and article text below. Return JSON only with key sentiment_score. "
-        "sentiment_score must be a number from -1 to 1, where +1 is strongly bullish, 0 is neutral, "
-        "and -1 is strongly bearish. Do not summarize or translate the article.\n\n"
-        f"Ticker: {ticker or ''}\nTitle: {title or ''}\nURL: {url or ''}\n"
-        f"Language: {NEWS_SUMMARY_LANGUAGE_NAMES[language]}\nSentiment version: {sentiment_version}\n\n"
-        f"Content:\n{source_text[:9000]}"
-    )
-    try:
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "user", "content": prompt}],
-            response_format={"type": "json_object"},
-        )
-        result = json.loads(response.choices[0].message.content)
-        sentiment_score = max(-1.0, min(1.0, float(result.get("sentiment_score", 0))))
-        return {
-            "credibility_score": credibility_score,
-            "sentiment_score": sentiment_score,
-        }
-    except Exception:
-        return fallback
+    return fallback
 
 
 @st.cache_data(ttl=7 * 24 * 60 * 60)
-def get_cached_ai_news_translation(ticker, title, url, language, translation_version, source_text, refresh_nonce=0):
+def get_cached_ai_news_translation(ticker, title, url, source, language, translation_version, source_text, refresh_nonce=0):
     source_text = _clean_extracted_article_text(source_text, max_chars=12000)
     if not source_text:
         return "", None
@@ -946,12 +2137,12 @@ def get_cached_ai_news_translation(ticker, title, url, language, translation_ver
         return source_text, f"AI translation unavailable; showing source text: {exc}"
     target_language = NEWS_SUMMARY_LANGUAGE_NAMES[language]
     prompt = (
-        f"Translate the supplied Yahoo/yfinance news content into {target_language}. "
+        f"Translate the supplied {source or 'news'} content into {target_language}. "
         "Do not summarize, analyze, add investment opinions, classify sentiment, or use bullish/bearish/neutral labels. "
         "Keep company names, tickers, source names, URLs, and article titles as supplied when appropriate. "
         "Return only the translated article text in plain paragraphs. "
         "If the input contains only a title and source summary, translate that title and summary fully.\n\n"
-        f"Ticker: {ticker or ''}\nTitle: {title or ''}\nURL: {url or ''}\n"
+        f"Source: {source or ''}\nTicker: {ticker or ''}\nTitle: {title or ''}\nURL: {url or ''}\n"
         f"Translation cache version: {translation_version}\n\nSource content:\n{source_text}"
     )
     try:
@@ -967,20 +2158,26 @@ def get_cached_ai_news_translation(ticker, title, url, language, translation_ver
         return source_text, f"AI translation unavailable; showing source text: {exc}"
 
 
-def render_yahoo_news_translation(item):
+def _news_item_ai_cache_key(item, language, version, purpose):
+    return hashlib.sha256(json.dumps(
+        [
+            purpose,
+            _news_item_source_name(item),
+            item.get("ticker") or "",
+            item.get("title") or "",
+            item.get("url") or "",
+            language,
+            version,
+        ],
+        ensure_ascii=True,
+    ).encode("utf-8")).hexdigest()
+
+
+def render_news_translation(item):
     language = _news_summary_language(st.session_state.get("language", "English"))
     with st.expander(NEWS_TRANSLATION_LABELS[language], expanded=False):
         try:
-            translation_key = hashlib.sha256(json.dumps(
-                [
-                    item.get("ticker") or "",
-                    item.get("title") or "",
-                    item.get("url") or "",
-                    language,
-                    AI_TRANSLATION_VERSION,
-                ],
-                ensure_ascii=True,
-            ).encode("utf-8")).hexdigest()
+            translation_key = _news_item_ai_cache_key(item, language, AI_TRANSLATION_VERSION, "translation")
             requested_key = f"news_translation_requested_{translation_key}"
             button_label, refresh_label, idle_caption = NEWS_TRANSLATION_UI[language]
             if st.button(button_label, key=f"generate_news_translation_{translation_key}"):
@@ -988,14 +2185,14 @@ def render_yahoo_news_translation(item):
             if not st.session_state.get(requested_key):
                 st.caption(idle_caption)
                 return
-            source_text = _yahoo_news_source_text(item)
             translation, warning = get_cached_ai_news_translation(
                 item.get("ticker") or "",
                 item.get("title") or "",
                 item.get("url") or "",
+                _news_item_source_name(item),
                 language,
                 AI_TRANSLATION_VERSION,
-                source_text,
+                _standard_news_source_text(item),
                 st.session_state.get(f"news_translation_refresh_{translation_key}", 0),
             )
             if warning:
@@ -1012,17 +2209,12 @@ def render_yahoo_news_translation(item):
             st.warning(f"AI translation unavailable: {exc}")
 
 
+def render_yahoo_news_translation(item):
+    render_news_translation(item)
+
+
 def _yahoo_translation_key(item, language):
-    return hashlib.sha256(json.dumps(
-        [
-            item.get("ticker") or "",
-            item.get("title") or "",
-            item.get("url") or "",
-            language,
-            AI_TRANSLATION_VERSION,
-        ],
-        ensure_ascii=True,
-    ).encode("utf-8")).hexdigest()
+    return _news_item_ai_cache_key(item, language, AI_TRANSLATION_VERSION, "translation")
 
 
 def _detailed_summary_language_instruction(language):
@@ -1056,8 +2248,8 @@ def _detailed_summary_language_instruction(language):
 
 
 @st.cache_data(ttl=7 * 24 * 60 * 60)
-def get_cached_ai_yahoo_detailed_summary(
-    ticker, title, url, summary, language, detailed_summary_version, source_text, refresh_nonce=0
+def get_cached_ai_news_detailed_summary(
+    ticker, title, url, source, summary, language, detailed_summary_version, source_text, refresh_nonce=0
 ):
     source_text = _clean_extracted_article_text(source_text, max_chars=16000)
     if not source_text:
@@ -1068,16 +2260,16 @@ def get_cached_ai_yahoo_detailed_summary(
     except Exception as exc:
         return "", str(exc)
     prompt = (
-        "Create a natural-language ChatGPT-style detailed explanation of the supplied Yahoo/yfinance news item. "
+        f"Create a natural-language ChatGPT-style detailed explanation of the supplied {source or 'news'} item. "
         "Do not use the old fixed investment AI Summary template and do not output sections named News Overview, "
         "Why It Matters, Potential Stock Impact, Positive Factors, Risk Factors, AI View, or Confidence. "
         "Explain the article's logic clearly, not just a short overview. Use only the supplied text; do not fetch the URL. "
-        "First decide whether the article is actually related to stock investing. If it is investment-related, emphasize "
-        "what the article is really saying, the likely impact on the related ticker, bullish logic, risk logic, whether "
-        "the author's tone is optimistic, cautious, or pessimistic, and what investors should watch next. If it is not "
+        "The detailed summary must be more specific than the source summary. If it is investment-related, explicitly cover: "
+        "1) the core news event, 2) the direct impact on related companies, 3) the possible impact on revenue, profit, "
+        "valuation, or stock-price sentiment, 4) key risks, and 5) follow-up signals investors should monitor. If it is not "
         "investment-related, summarize it as ordinary news and do not force an investment conclusion. "
         f"{_detailed_summary_language_instruction(language)}\n\n"
-        f"Ticker: {ticker or ''}\nTitle: {title or ''}\nURL: {url or ''}\n"
+        f"Source: {source or ''}\nTicker: {ticker or ''}\nTitle: {title or ''}\nURL: {url or ''}\n"
         f"Source summary: {summary or ''}\nLanguage: {NEWS_SUMMARY_LANGUAGE_NAMES[language]}\n"
         f"Detailed summary cache version: {detailed_summary_version}\n\n"
         f"News content:\n{source_text}"
@@ -1095,35 +2287,19 @@ def get_cached_ai_yahoo_detailed_summary(
         return "", str(exc)
 
 
-def render_yahoo_news_detailed_summary(item):
+def get_cached_ai_yahoo_detailed_summary(
+    ticker, title, url, summary, language, detailed_summary_version, source_text, refresh_nonce=0
+):
+    return get_cached_ai_news_detailed_summary(
+        ticker, title, url, "Yahoo/yfinance", summary, language, detailed_summary_version, source_text, refresh_nonce
+    )
+
+
+def render_news_detailed_summary(item):
     language = _news_summary_language(st.session_state.get("language", "English"))
     with st.expander(NEWS_DETAILED_SUMMARY_LABELS[language], expanded=False):
         try:
-            source_text = _yahoo_news_source_text(item)
-            translation_key = _yahoo_translation_key(item, language)
-            if st.session_state.get(f"news_translation_requested_{translation_key}"):
-                translated_text, _ = get_cached_ai_news_translation(
-                    item.get("ticker") or "",
-                    item.get("title") or "",
-                    item.get("url") or "",
-                    language,
-                    AI_TRANSLATION_VERSION,
-                    source_text,
-                    st.session_state.get(f"news_translation_refresh_{translation_key}", 0),
-                )
-                if translated_text:
-                    source_text = translated_text
-            detailed_summary_key = hashlib.sha256(json.dumps(
-                [
-                    item.get("ticker") or "",
-                    item.get("title") or "",
-                    item.get("url") or "",
-                    item.get("text") or "",
-                    language,
-                    AI_DETAILED_SUMMARY_VERSION,
-                ],
-                ensure_ascii=True,
-            ).encode("utf-8")).hexdigest()
+            detailed_summary_key = _news_item_ai_cache_key(item, language, AI_DETAILED_SUMMARY_VERSION, "detailed_summary")
             requested_key = f"news_detailed_summary_requested_{detailed_summary_key}"
             button_label, refresh_label, idle_caption = NEWS_DETAILED_SUMMARY_UI[language]
             if st.button(button_label, key=f"generate_news_detailed_summary_{detailed_summary_key}"):
@@ -1131,11 +2307,27 @@ def render_yahoo_news_detailed_summary(item):
             if not st.session_state.get(requested_key):
                 st.caption(idle_caption)
                 return
-            detailed_summary, warning = get_cached_ai_yahoo_detailed_summary(
+            source_text = _standard_news_source_text(item)
+            translation_key = _news_item_ai_cache_key(item, language, AI_TRANSLATION_VERSION, "translation")
+            if st.session_state.get(f"news_translation_requested_{translation_key}"):
+                translated_text, _ = get_cached_ai_news_translation(
+                    item.get("ticker") or "",
+                    item.get("title") or "",
+                    item.get("url") or "",
+                    _news_item_source_name(item),
+                    language,
+                    AI_TRANSLATION_VERSION,
+                    source_text,
+                    st.session_state.get(f"news_translation_refresh_{translation_key}", 0),
+                )
+                if translated_text:
+                    source_text = translated_text
+            detailed_summary, warning = get_cached_ai_news_detailed_summary(
                 item.get("ticker") or "",
                 item.get("title") or "",
                 item.get("url") or "",
-                item.get("text") or "",
+                _news_item_source_name(item),
+                _news_item_summary_text(item),
                 language,
                 AI_DETAILED_SUMMARY_VERSION,
                 source_text,
@@ -1153,6 +2345,10 @@ def render_yahoo_news_detailed_summary(item):
                 st.rerun()
         except Exception:
             st.warning(NEWS_DETAILED_SUMMARY_UNAVAILABLE[language])
+
+
+def render_yahoo_news_detailed_summary(item):
+    render_news_detailed_summary(item)
 
 
 def _rule_based_news_summary(title, text, ticker, sentiment, language):
@@ -1387,14 +2583,21 @@ def render_ticker_news_summary(ticker, news_items):
         sort_keys=True,
     )
     summary_key = hashlib.sha256(f"{ticker}:{language}:{AI_SUMMARY_VERSION}:{digest}".encode("utf-8")).hexdigest()
-    summary, warning = get_cached_ai_ticker_news_summary(
-        ticker,
-        digest,
-        language,
-        AI_SUMMARY_VERSION,
-        st.session_state.get(f"ticker_news_summary_refresh_{summary_key}", 0),
-    )
-    with st.expander(NEWS_SUMMARY_LABELS[language], expanded=True):
+    requested_key = f"ticker_news_summary_requested_{summary_key}"
+    button_label, refresh_label, idle_caption = NEWS_SUMMARY_UI[language]
+    with st.expander(NEWS_SUMMARY_LABELS[language], expanded=False):
+        if st.button(button_label, key=f"generate_ticker_news_summary_{summary_key}"):
+            st.session_state[requested_key] = True
+        if not st.session_state.get(requested_key):
+            st.caption(idle_caption)
+            return
+        summary, warning = get_cached_ai_ticker_news_summary(
+            ticker,
+            digest,
+            language,
+            AI_SUMMARY_VERSION,
+            st.session_state.get(f"ticker_news_summary_refresh_{summary_key}", 0),
+        )
         if warning:
             st.warning(warning)
         labels = NEWS_SUMMARY_FIELD_LABELS[language]
@@ -1406,11 +2609,15 @@ def render_ticker_news_summary(ticker, news_items):
                 st.markdown(f"- {value}")
         for field in ("ai_view", "confidence"):
             st.markdown(f"**{_news_summary_label_text(labels, field, language)}** {summary[field]}")
+        if st.button(refresh_label, key=f"refresh_ticker_news_summary_{summary_key}"):
+            refresh_key = f"ticker_news_summary_refresh_{summary_key}"
+            st.session_state[refresh_key] = st.session_state.get(refresh_key, 0) + 1
+            st.rerun()
 
 
 def yahoo_news_score_caption_parts(item):
     language = _news_summary_language(st.session_state.get("language", "English"))
-    article_text = get_cached_yahoo_article_text(item.get("url"))
+    article_text = ""
     try:
         scores = get_cached_yahoo_news_scores(
             item.get("ticker") or "",
@@ -1443,44 +2650,55 @@ def yahoo_news_score_caption_parts(item):
     )
 
 
-def render_news_item(item):
+def render_standard_news_card(item):
     title = item.get("title") or t("untitled_article")
     url = item.get("url")
-    is_yahoo_news = item.get("source") == "Yahoo/yfinance"
     st.markdown("#### " + title)
-    publisher = item.get("publisher") or t("unknown_publisher")
+    publisher = _news_item_publisher(item)
     related_ticker = item.get("related_tickers") or item.get("ticker") or t("market")
     caption_parts = [
-        item.get("published_date") or t("date_unavailable"),
+        item.get("published_date") or item.get("publishedDate") or t("date_unavailable"),
         publisher,
-        item.get("ticker") or t("market"),
         f"{t('related_ticker')}: {related_ticker}",
-        item.get("source") or t("unknown_source"),
+        _news_item_source_name(item),
     ]
-    if not is_yahoo_news:
-        caption_parts.append(news_sentiment_label(item["sentiment"]))
-    else:
+    if item.get("source") == "Yahoo/yfinance":
         caption_parts.extend(yahoo_news_score_caption_parts(item))
+    elif item.get("sentiment"):
+        caption_parts.append(news_sentiment_label(item["sentiment"]))
     st.caption(" | ".join(caption_parts))
-    if item.get("text") and not is_yahoo_news:
-        st.write(item["text"])
-    if is_yahoo_news:
-        render_yahoo_news_translation(item)
-        render_yahoo_news_detailed_summary(item)
-    else:
-        render_ai_news_summary(item)
+    summary_text = _news_item_summary_text(item)
+    if summary_text:
+        st.write(summary_text)
+    render_news_translation(item)
+    render_news_detailed_summary(item)
     if url:
         st.link_button(t("open_article"), url)
     st.divider()
 
 
+def render_news_item(item):
+    render_standard_news_card(item)
+
+
 def render_fmp_news_section():
     st.caption(t("fmp_news_fallback"))
+    watchlist = load_watchlist()
     try:
-        stock_news = get_cached_watchlist_news(tuple(WATCHLIST))
+        stock_news = get_cached_watchlist_news(tuple(watchlist))
     except Exception as exc:
         st.warning(f"{t('stock_news_unavailable')}: {exc}")
         stock_news = []
+    if not stock_news:
+        try:
+            yahoo_fallback = get_cached_watchlist_yahoo_news(tuple(watchlist), 10)
+            stock_news = [
+                item
+                for ticker in watchlist
+                for item in yahoo_fallback.get(ticker, [])
+            ]
+        except Exception as exc:
+            st.warning(f"{t('fmp_news_fallback')}: {exc}")
 
     prepared_news = [
         {**item, "sentiment": classify_news_sentiment(item)}
@@ -1488,7 +2706,7 @@ def render_fmp_news_section():
         if item.get("title")
     ]
     filter_columns = st.columns(4)
-    ticker_filter_label = filter_columns[0].selectbox(t("select_ticker"), [t("all"), *WATCHLIST], key="news_ticker")
+    ticker_filter_label = filter_columns[0].selectbox(t("select_ticker"), [t("all"), *watchlist], key="news_ticker")
     ticker_filter = "All" if ticker_filter_label == t("all") else ticker_filter_label
     available_sources = sorted({item["source"] for item in prepared_news if item.get("source")})
     source_filter_label = filter_columns[1].selectbox(t("select_source"), [t("all"), *available_sources], key="news_source")
@@ -1539,19 +2757,20 @@ def render_fmp_news_section():
 def render_yahoo_news_section():
     st.subheader(t("yahoo_news"))
     st.caption(t("yahoo_news_caption"))
+    watchlist = load_watchlist()
     try:
-        yahoo_news_by_ticker = get_cached_watchlist_yahoo_news(tuple(WATCHLIST), 10)
+        yahoo_news_by_ticker = get_cached_watchlist_yahoo_news(tuple(watchlist), 10)
     except Exception as exc:
         st.warning(f"{t('yahoo_news_unavailable')}: {exc}")
         yahoo_news_by_ticker = {}
 
-    for ticker in WATCHLIST:
+    for ticker in watchlist:
         news_items = [
             {**item, "sentiment": classify_news_sentiment(item)}
             for item in yahoo_news_by_ticker.get(ticker, [])
             if item.get("title")
         ]
-        with st.expander(f"{ticker} | {COMPANY_NAMES[ticker]} | {t('related_news')}", expanded=ticker == "NVDA"):
+        with st.expander(f"{ticker} | {company_name(ticker)} | {t('related_news')}", expanded=ticker == "NVDA"):
             if not news_items:
                 st.info(t("no_yahoo_news"))
                 continue
@@ -1560,20 +2779,60 @@ def render_yahoo_news_section():
                 render_news_item(item)
 
 
+def render_trendforce_news_section():
+    st.subheader(t("trendforce_news"))
+    st.caption(t("trendforce_news_caption"))
+    try:
+        trendforce_news = [
+            {**item, "source": item.get("source") or "TrendForce", "sentiment": item.get("sentiment") or classify_news_sentiment(item)}
+            for item in get_cached_trendforce_news(20)
+            if item.get("title")
+        ]
+    except Exception as exc:
+        st.warning(f"{t('no_trendforce_news')}: {exc}")
+        trendforce_news = []
+    if not trendforce_news:
+        st.info(t("no_trendforce_news"))
+        return
+    for item in sorted(trendforce_news, key=_news_sort_key, reverse=True)[:20]:
+        render_news_item(item)
+
+
 def render_news_section():
-    fmp_tab, yahoo_tab = st.tabs([t("fmp_news_tab"), t("yahoo_news_tab")])
-    with fmp_tab:
-        render_fmp_news_section()
-    with yahoo_tab:
-        render_yahoo_news_section()
+    news_sections = [t("fmp_news_tab"), t("yahoo_news_tab"), t("trendforce_news_tab")]
+    selected_news_section = st.radio(
+        t("select_source"),
+        news_sections,
+        horizontal=True,
+        key="news_section_selector",
+    )
+    with st.spinner("Loading news..."):
+        if selected_news_section == t("fmp_news_tab"):
+            render_fmp_news_section()
+        elif selected_news_section == t("yahoo_news_tab"):
+            render_yahoo_news_section()
+        else:
+            render_trendforce_news_section()
+
+
+def get_cached_yahoo_rss_headlines(ticker, limit=5):
+    track_cacheable_call()
+    track_api_call("yahoo_rss_headlines")
+    feed = feedparser.parse(f"https://feeds.finance.yahoo.com/rss/2.0/headline?s={ticker}&region=US&lang=en-US")
+    return [entry.title for entry in feed.entries[:limit]]
+
+
+get_cached_yahoo_rss_headlines = st.cache_data(ttl=1800)(get_cached_yahoo_rss_headlines)
 
 
 def fetch_news_headlines(ticker, limit=5):
     fmp_news = get_cached_company_news(ticker, limit)
     if fmp_news:
         return [item["title"] for item in fmp_news if item.get("title")]
-    feed = feedparser.parse(f"https://feeds.finance.yahoo.com/rss/2.0/headline?s={ticker}&region=US&lang=en-US")
-    return [entry.title for entry in feed.entries[:limit]]
+    try:
+        return get_cached_yahoo_rss_headlines(ticker, limit)
+    except Exception:
+        return []
 
 
 def fetch_news_sentiment(ticker, client):
@@ -1595,7 +2854,10 @@ def fetch_news_sentiment(ticker, client):
 def get_technical_summary(ticker):
     data = get_technical_data(ticker)
     latest = data.iloc[-1]
+    closes = data["Close"].dropna()
     price = float(latest["Close"])
+    previous_close = float(closes.iloc[-2]) if len(closes) >= 2 else None
+    daily_change_pct = None if previous_close in (None, 0) else (price - previous_close) / previous_close * 100
     ma5 = None if pd.isna(latest["MA5"]) else float(latest["MA5"])
     ma20 = None if pd.isna(latest["MA20"]) else float(latest["MA20"])
     if ma5 is None or ma20 is None:
@@ -1607,6 +2869,8 @@ def get_technical_summary(ticker):
     else:
         trend = "neutral"
     return {
+        "price": price,
+        "daily_change_pct": daily_change_pct,
         "trend": trend,
         "rsi_14": None if pd.isna(latest["RSI"]) else round(float(latest["RSI"]), 2),
         "ma_5": ma5,
@@ -1620,21 +2884,25 @@ def get_options_summary(ticker):
     return {
         "nearest_expiration": opt["exp_date"],
         "put_call_ratio": opt["pc_ratio"],
+        "total_call_oi": opt.get("total_call_oi"),
+        "total_put_oi": opt.get("total_put_oi"),
         "max_pain": opt["max_pain"],
         "net_gex": opt["net_gex"],
         "call_wall": opt["call_wall"],
         "put_wall": opt["put_wall"],
+        "missing_reasons": opt.get("missing_reasons", []),
+        "source": opt.get("source"),
     }
 
 
 def build_ai_summary_payload(snapshots, macro_snapshot=None):
     stocks = []
-    for ticker in WATCHLIST:
+    for ticker in load_watchlist():
         snapshot = snapshots.get(ticker) or {}
         stock_data = {
             "ticker": ticker,
-            "company_name": COMPANY_NAMES[ticker],
-            "supply_chain_role": SUPPLY_CHAIN_ROLES[ticker],
+            "company_name": company_name(ticker, snapshot),
+            "supply_chain_role": supply_chain_role(ticker),
             "current_price": snapshot.get("price"),
             "daily_change_pct": snapshot.get("change_pct"),
             "revenue": snapshot.get("revenue"),
@@ -1680,6 +2948,7 @@ def build_ai_summary_payload(snapshots, macro_snapshot=None):
 
 
 def build_ai_summary_prompt(payload):
+    tracked_tickers = ", ".join(stock.get("ticker", "") for stock in payload.get("stocks", []) if stock.get("ticker"))
     return f"""
 You are a professional US equity analyst. Write a concise daily watchlist summary dated {payload["report_date"]}.
 Use only the supplied structured data. Do not invent missing values, do not use placeholder dates,
@@ -1708,19 +2977,20 @@ Use this exact report structure:
 - Identify strongest setup
 - Identify highest risk name
 - State whether the group is bullish, neutral, or bearish overall
-- Explain how macro affects NVDA, MU, SNDK, LITE, and RKLB based on their supplied roles and metrics.
-- Treat NVDA as an AI growth stock with rate-sensitive valuation; MU and SNDK as memory/storage-cycle names sensitive to global demand and USD; LITE as optical AI-infrastructure exposure sensitive to capex; and RKLB as a high-duration growth stock sensitive to rates and risk appetite.
+- Explain how macro affects the current tracked tickers ({tracked_tickers}) based on their supplied roles and metrics.
+- Do not assume every ticker is a semiconductor or AI stock; use each company's supplied data and mark unknown exposures as unavailable when needed.
 """
 
 
 def render_daily_report(snapshots):
     st.caption(t("daily_report_caption"))
     if st.button(t("generate_daily_report"), key="daily_report"):
+        watchlist = load_watchlist()
         st.subheader(f"{t('daily_watchlist_report')} | {datetime.now():%Y-%m-%d}")
         render_overview_cards(snapshots)
         st.markdown(f"#### {t('technical_snapshot')}")
         rows = []
-        for ticker in WATCHLIST:
+        for ticker in watchlist:
             try:
                 data = get_technical_data(ticker)
                 rows.append({
@@ -1734,7 +3004,7 @@ def render_daily_report(snapshots):
         st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
         st.markdown(f"#### {t('options_snapshot')}")
         options_rows = []
-        for ticker in WATCHLIST:
+        for ticker in watchlist:
             try:
                 opt = get_options_data(ticker)
                 options_rows.append({
@@ -1753,10 +3023,10 @@ def render_daily_report(snapshots):
         st.dataframe(pd.DataFrame(options_rows), use_container_width=True, hide_index=True)
         st.markdown(f"#### {t('value_snapshot')}")
         valuation_rows = []
-        for ticker in WATCHLIST:
+        for ticker in watchlist:
             snapshot = snapshots.get(ticker)
             valuation_rows.append({
-                t("ticker"): ticker, t("company"): COMPANY_NAMES[ticker], t("supply_chain_role"): SUPPLY_CHAIN_ROLES[ticker],
+                t("ticker"): ticker, t("company"): company_name(ticker, snapshot), t("supply_chain_role"): supply_chain_role(ticker),
                 t("trailing_pe"): "N/A" if not snapshot else format_ratio(snapshot["trailing_pe"]),
                 t("forward_pe"): "N/A" if not snapshot else format_ratio(snapshot["forward_pe"]),
                 t("price_book"): "N/A" if not snapshot else format_ratio(snapshot["price_to_book"]),
@@ -1767,7 +3037,7 @@ def render_daily_report(snapshots):
         st.dataframe(pd.DataFrame(valuation_rows), use_container_width=True, hide_index=True)
         st.markdown(f"#### {t('earnings_catalysts')}")
         catalyst_rows = []
-        for ticker in WATCHLIST:
+        for ticker in watchlist:
             snapshot = snapshots.get(ticker) or {}
             catalyst_rows.append({
                 t("ticker"): ticker, t("next_earnings_date"): snapshot.get("next_earnings_date") or "N/A",
@@ -1780,13 +3050,13 @@ def render_daily_report(snapshots):
         try:
             client = get_openai_client()
             sentiment_rows = []
-            for ticker in WATCHLIST:
+            for ticker in watchlist:
                 try:
                     sentiment_rows.append({t("ticker"): ticker, **fetch_news_sentiment(ticker, client)})
                 except Exception as exc:
                     sentiment_rows.append({t("ticker"): ticker, "sentiment": "N/A", "score": 0, "summary": str(exc)})
             st.dataframe(pd.DataFrame(sentiment_rows), use_container_width=True, hide_index=True)
-            summary_payload = build_ai_summary_payload(snapshots, summarize_macro_snapshot(build_macro_snapshot()))
+            summary_payload = build_ai_summary_payload(snapshots, summarize_macro_snapshot(get_cached_macro_snapshot()))
             prompt = build_ai_summary_prompt(summary_payload)
             response = client.chat.completions.create(model="gpt-4o-mini", messages=[{"role": "user", "content": prompt}])
             st.markdown(f"#### {t('ai_summary')}")
@@ -1795,34 +3065,970 @@ def render_daily_report(snapshots):
             st.warning(f"{t('ai_summary_unavailable')}: {exc}")
 
 
-def render_multi_agent_section():
-    st.caption(t("multi_agent_caption"))
-    if st.button(t("run_multi_agent"), key="multi_agent"):
-        from multi_agent import agent_fundamental, agent_news, agent_options, agent_risk_manager, agent_technical
-        for ticker in WATCHLIST:
-            with st.expander(f"{ticker} | {COMPANY_NAMES[ticker]} Multi-Agent Research", expanded=ticker == "NVDA"):
-                with st.spinner(f"{t('running_agents')} {ticker}..."):
-                    technical = agent_technical(ticker)
-                    fundamental = agent_fundamental(ticker)
-                    options = agent_options(ticker)
-                    news = agent_news(ticker)
-                    verdict = agent_risk_manager(ticker, technical, fundamental, options, news)
-                st.markdown(f"##### {t('final_verdict')}")
-                st.info(verdict)
-                with st.expander(t("agent_detail")):
-                    st.markdown(f"**{t('technical_analysis')}**")
-                    st.write(technical)
-                    st.markdown(f"**{t('fundamental_analysis')}**")
-                    st.write(fundamental)
-                    st.markdown(f"**{t('options_analysis')}**")
-                    st.write(options)
-                    st.markdown(f"**{t('news_sentiment')}**")
-                    st.write(news)
+MULTI_AGENT_TEXTS = {
+    "English": {
+        "caption": "Run the five-agent workflow for one selected ticker.",
+        "select_ticker": "Select ticker for multi-agent analysis",
+        "run_button": "Run Multi-Agent Analysis",
+        "running": "Running research agents for",
+        "no_analysis": "No multi-agent analysis available for this ticker yet.",
+        "final_conclusion": "Final Summary",
+        "final_summary": "Final Summary",
+        "overall_rating": "Overall Rating",
+        "key_risk": "Key Risk",
+        "key_opportunity": "Key Opportunity",
+        "suggested_action": "Suggested Action",
+        "key_levels": "Key Levels",
+        "risk_management": "Risk Management",
+        "agent_details": "Agent Details",
+        "technical_analysis": "Technical Analysis",
+        "options_analysis": "Options Analysis",
+        "sentiment_analysis": "Sentiment Analysis",
+        "fundamental_analysis": "Fundamental Analysis",
+        "missing_data": "Missing Data",
+        "fallback_validation_note": "OpenAI returned a result, but it did not pass quality checks. A rule-based fallback summary is shown.",
+        "fallback_error_note": "OpenAI failed. A rule-based fallback summary is shown.",
+        "neutral_rating": "NEUTRAL",
+        "unavailable": "Unavailable",
+        "hold": "Wait for clearer data before taking action.",
+        "mixed_setup": "The setup is mixed based on currently available data.",
+    },
+    "中文": {
+        "caption": "为一个选定股票运行五智能体分析流程。",
+        "select_ticker": "选择要进行多智能体分析的股票",
+        "run_button": "运行该股票多智能体分析",
+        "running": "正在运行研究智能体：",
+        "no_analysis": "当前股票暂无多智能体分析结果。",
+        "final_conclusion": "最终总结",
+        "final_summary": "最终总结",
+        "overall_rating": "综合评级",
+        "key_risk": "主要风险",
+        "key_opportunity": "主要机会",
+        "suggested_action": "建议操作",
+        "key_levels": "关键价位",
+        "risk_management": "风险管理",
+        "agent_details": "智能体详情",
+        "technical_analysis": "技术分析",
+        "options_analysis": "期权分析",
+        "sentiment_analysis": "情绪分析",
+        "fundamental_analysis": "基本面分析",
+        "missing_data": "缺失数据",
+        "fallback_validation_note": "OpenAI 已返回结果，但未通过质量检查，已显示基于规则的备用摘要。",
+        "fallback_error_note": "OpenAI 调用失败，已显示基于规则的备用摘要。",
+        "neutral_rating": "中性",
+        "unavailable": "不可用",
+        "hold": "等待更清晰的数据后再采取行动。",
+        "mixed_setup": "根据当前可用数据，整体形势较为混合。",
+    },
+    "Español": {
+        "caption": "Ejecute el flujo de cinco agentes para un ticker seleccionado.",
+        "select_ticker": "Seleccionar ticker para análisis multiagente",
+        "run_button": "Ejecutar análisis multiagente",
+        "running": "Ejecutando agentes de análisis para",
+        "no_analysis": "No hay análisis multiagente disponible para este ticker.",
+        "final_conclusion": "Resumen final",
+        "final_summary": "Resumen final",
+        "overall_rating": "Calificación general",
+        "key_risk": "Riesgo principal",
+        "key_opportunity": "Oportunidad principal",
+        "suggested_action": "Acción sugerida",
+        "key_levels": "Niveles clave",
+        "risk_management": "Gestión del riesgo",
+        "agent_details": "Detalles de los agentes",
+        "technical_analysis": "Análisis técnico",
+        "options_analysis": "Análisis de opciones",
+        "sentiment_analysis": "Análisis de sentimiento",
+        "fundamental_analysis": "Análisis fundamental",
+        "missing_data": "Datos faltantes",
+        "fallback_validation_note": "OpenAI devolvió un resultado, pero no superó los controles de calidad. Se muestra un resumen basado en reglas.",
+        "fallback_error_note": "OpenAI falló. Se muestra un resumen basado en reglas.",
+        "neutral_rating": "NEUTRAL",
+        "unavailable": "No disponible",
+        "hold": "Esperar datos más claros antes de actuar.",
+        "mixed_setup": "La configuración es mixta según los datos disponibles.",
+    },
+}
+
+
+def _multi_agent_language(language):
+    language_text = str(language or "")
+    if language_text == "中文" or language_text.lower() in ("zh", "chinese"):
+        return "中文"
+    if language_text == "Español" or language_text.lower() in ("es", "spanish", "español") or language_text.startswith("Espa"):
+        return "Español"
+    return "English"
+
+
+def multi_agent_text(key, language=None):
+    language = _multi_agent_language(language or st.session_state.get("language", "English"))
+    return MULTI_AGENT_TEXTS.get(language, MULTI_AGENT_TEXTS["English"]).get(key, MULTI_AGENT_TEXTS["English"].get(key, key))
+
+
+def build_multi_agent_language_instruction(language):
+    language = _multi_agent_language(language)
+    if language == "中文":
+        return "Write the entire report in Simplified Chinese. Only ticker symbols and standard financial terms such as RSI, GEX, P/E, EBITDA may remain in English. Translate news titles by meaning instead of leaving English headlines."
+    if language == "Español":
+        return "Write the entire report in Spanish. Only ticker symbols and standard financial terms such as RSI, GEX, P/E, EBITDA may remain in English. Translate news titles by meaning instead of leaving English headlines."
+    return "Please write the entire analysis in English."
+
+
+def _multi_agent_is_unavailable(value):
+    if value is None:
+        return True
+    if isinstance(value, dict):
+        return all(_multi_agent_is_unavailable(item) for item in value.values())
+    if isinstance(value, (list, tuple, set)):
+        return not value
+    return str(value).strip().lower() in ("", "n/a", "none", "nan", "unavailable")
+
+
+def _multi_agent_has_value(container, keys):
+    container = container or {}
+    return any(not _multi_agent_is_unavailable(container.get(key)) for key in keys)
+
+
+def _multi_agent_news_sentiment(headlines):
+    text = " ".join(str(headline or "") for headline in headlines).lower()
+    positive = sum(_contains_news_keyword(text, keyword) for keyword in POSITIVE_NEWS_KEYWORDS)
+    negative = sum(_contains_news_keyword(text, keyword) for keyword in NEGATIVE_NEWS_KEYWORDS)
+    score = positive - negative
+    if score > 0:
+        return "Positive", score
+    if score < 0:
+        return "Negative", score
+    return "Neutral", 0
+
+
+def _multi_agent_loaded_flags(inputs):
+    technical = inputs.get("technical") or {}
+    fundamental = inputs.get("fundamental") or {}
+    options = inputs.get("options") or {}
+    sentiment = inputs.get("sentiment") or {}
+    return {
+        "technical_data_loaded": _multi_agent_has_value(technical, ("price", "daily_change_pct", "rsi_14", "ma_5", "ma_20", "volume_vs_20d")),
+        "options_data_loaded": _multi_agent_has_value(options, ("put_call_ratio", "net_gex", "max_pain", "total_call_oi", "total_put_oi", "call_wall", "put_wall")),
+        "news_data_loaded": _multi_agent_has_value(sentiment, ("latest_headlines", "latest_sentiment", "sentiment_score")),
+        "financial_data_loaded": _multi_agent_has_value(fundamental, ("current_price", "daily_change_pct", "revenue", "market_cap", "net_margin", "trailing_pe", "forward_pe")),
+    }
+
+
+def _multi_agent_inputs_have_data(inputs):
+    technical = inputs.get("technical") or {}
+    fundamental = inputs.get("fundamental") or {}
+    options = inputs.get("options") or {}
+    sentiment = inputs.get("sentiment") or {}
+    return any(
+        not _multi_agent_is_unavailable(value)
+        for value in (
+            technical.get("trend"),
+            technical.get("price"),
+            technical.get("daily_change_pct"),
+            technical.get("rsi_14"),
+            technical.get("ma_5"),
+            technical.get("ma_20"),
+            technical.get("volume_vs_20d"),
+            fundamental.get("current_price"),
+            fundamental.get("daily_change_pct"),
+            fundamental.get("revenue"),
+            fundamental.get("market_cap"),
+            fundamental.get("net_margin"),
+            fundamental.get("trailing_pe"),
+            fundamental.get("forward_pe"),
+            fundamental.get("revenue_growth_yoy"),
+            fundamental.get("analyst_target"),
+            options.get("put_call_ratio"),
+            options.get("max_pain"),
+            options.get("net_gex"),
+            options.get("call_wall"),
+            options.get("put_wall"),
+            sentiment.get("latest_headlines"),
+            sentiment.get("latest_sentiment"),
+        )
+    )
+
+
+def collect_multi_agent_inputs(ticker):
+    inputs = {"ticker": ticker, "company_name": company_name(ticker), "report_date": datetime.now().strftime("%Y-%m-%d")}
+    errors = {}
+    try:
+        inputs["technical"] = get_technical_summary(ticker)
+    except Exception as exc:
+        inputs["technical"] = {"status": "unavailable"}
+        errors["technical"] = str(exc)
+    try:
+        snapshot = get_company_snapshot(ticker)
+        inputs["fundamental"] = {
+            "company_name": company_name(ticker, snapshot),
+            "current_price": snapshot.get("price") if snapshot else None,
+            "daily_change_pct": snapshot.get("change_pct") if snapshot else None,
+            "revenue": snapshot.get("revenue") if snapshot else None,
+            "market_cap": snapshot.get("market_cap") if snapshot else None,
+            "net_margin": snapshot.get("net_margin") if snapshot else None,
+            "trailing_pe": snapshot.get("trailing_pe") if snapshot else None,
+            "forward_pe": snapshot.get("forward_pe") if snapshot else None,
+            "price_to_book": snapshot.get("price_to_book") if snapshot else None,
+            "revenue_growth_yoy": snapshot.get("revenue_growth_yoy") if snapshot else None,
+            "analyst_target": snapshot.get("analyst_target") if snapshot else None,
+            "analyst_rating": snapshot.get("analyst_rating") if snapshot else None,
+            "data_source": snapshot.get("source") if snapshot else None,
+        }
+    except Exception as exc:
+        inputs["fundamental"] = {"status": "unavailable"}
+        errors["fundamental"] = str(exc)
+    try:
+        inputs["options"] = get_options_summary(ticker)
+    except Exception as exc:
+        inputs["options"] = {"status": "unavailable"}
+        errors["options"] = str(exc)
+    try:
+        headlines = fetch_news_headlines(ticker, 6)
+        sentiment_label, sentiment_score = _multi_agent_news_sentiment(headlines)
+        inputs["sentiment"] = {
+            "latest_headlines": headlines,
+            "latest_sentiment": sentiment_label if headlines else None,
+            "sentiment_score": sentiment_score if headlines else None,
+        }
+    except Exception as exc:
+        inputs["sentiment"] = {"latest_headlines": []}
+        errors["sentiment"] = str(exc)
+    inputs["errors"] = errors
+    inputs["no_data"] = not _multi_agent_inputs_have_data(inputs)
+    inputs["loaded_flags"] = _multi_agent_loaded_flags(inputs)
+    return inputs
+
+
+def build_multi_agent_prompt(ticker, inputs, language):
+    return f"""
+You are a five-agent equity research team analyzing only this selected ticker: {ticker}.
+{build_multi_agent_language_instruction(language)}
+
+Use only the supplied structured data. Do not invent missing values. If a metric is unavailable, explain exactly which metric is missing in missing_data.
+Return a complete structured report in the selected language.
+
+Strict JSON contract:
+Return valid JSON only with exactly these keys:
+{{
+  "overall_rating": "...",
+  "key_risk": "...",
+  "key_opportunity": "...",
+  "suggested_action": "...",
+  "final_summary": "...",
+  "technical_analysis": "...",
+  "options_analysis": "...",
+  "sentiment_analysis": "...",
+  "fundamental_analysis": "...",
+  "risk_management": "...",
+  "key_levels": ["...", "...", "..."],
+  "missing_data": ["..."]
+}}
+
+Quality rules:
+- Do not return N/A if data is available.
+- Do not write "missing data: none" or any equivalent sentence.
+- If no data is missing, set "missing_data": [].
+- Use the actual metrics provided below and cite the numbers in the analysis text.
+- Explain why the overall rating is bullish, neutral, or bearish.
+- Mention uncertainty and risk clearly.
+- Avoid generic text; every section must connect to the supplied metrics.
+- Each analysis section should be specific and at least 2-4 sentences when data is available.
+- For Chinese ratings use 看涨 / 看跌 / 中性. For Spanish ratings use Alcista / Bajista / Neutral. For English use Bullish / Bearish / Neutral.
+
+Technical analysis must include:
+- current price, daily change, RSI, MA5, MA20
+- whether price is above or below MA5 and MA20
+- momentum interpretation
+- support/resistance if available, otherwise infer cautiously from MA5/MA20 and options walls
+
+Options analysis must include:
+- expiry date, Put/Call OI ratio, call OI, put OI, net GEX, max pain, call wall, put wall
+- whether negative GEX may amplify volatility
+- whether call wall may act as resistance
+- whether put wall may act as support or a downside magnet
+- whether current price is far from max pain
+
+Sentiment analysis must include:
+- latest news titles translated/localized into the selected language when the selected language is not English
+- localized summary of what the news means
+- sentiment as positive / neutral / negative in the selected language
+- why the sentiment matters for the stock
+
+Fundamental analysis must include:
+- revenue, market cap, net margin
+- valuation quality if trailing P/E, forward P/E, price/book, or analyst target is available
+- profitability quality
+- whether the company looks like high growth, cyclical, margin risk, or a quality compounder
+- if data is insufficient, explain exactly what is missing
+
+Risk management must include:
+- whether the stock appears high beta or volatile based on daily move, RSI, options GEX, and option walls
+- whether current options structure increases volatility risk
+- what an investor using leverage should watch
+- key levels where risk may increase
+- do not give direct financial advice
+
+Structured data:
+{json.dumps(inputs, indent=2, ensure_ascii=False, default=str)}
+"""
+
+
+def _multi_agent_metric(value, kind="number"):
+    if _multi_agent_is_unavailable(value):
+        return None
+    if kind == "money":
+        return format_money(value, 2)
+    if kind == "money0":
+        return format_money(value, 0)
+    if kind == "percent_points":
+        return f"{float(value):+.2f}%"
+    if kind == "percent":
+        return format_percent(value)
+    if kind == "ratio":
+        return format_ratio(value)
+    return f"{float(value):,.2f}" if isinstance(value, (int, float, np.integer, np.floating)) else str(value)
+
+
+def _multi_agent_first_available(*values):
+    for value in values:
+        if not _multi_agent_is_unavailable(value):
+            return value
+    return None
+
+
+def _multi_agent_missing_labels(inputs, language="English"):
+    language = _multi_agent_language(language)
+    technical = inputs.get("technical") or {}
+    fundamental = inputs.get("fundamental") or {}
+    options = inputs.get("options") or {}
+    sentiment = inputs.get("sentiment") or {}
+    labels = {
+        "English": {
+            "price": "price",
+            "daily_change": "daily change",
+            "rsi": "RSI",
+            "ma5": "MA5",
+            "ma20": "MA20",
+            "put_call": "options Put/Call ratio",
+            "net_gex": "net GEX",
+            "max_pain": "max pain",
+            "sentiment": "latest news sentiment",
+            "revenue": "revenue",
+            "market_cap": "market cap",
+            "net_margin": "net margin",
+        },
+        "中文": {
+            "price": "现价",
+            "daily_change": "日涨跌幅",
+            "rsi": "RSI",
+            "ma5": "MA5",
+            "ma20": "MA20",
+            "put_call": "期权 Put/Call 比率",
+            "net_gex": "净 GEX",
+            "max_pain": "最大痛点",
+            "sentiment": "最新新闻情绪",
+            "revenue": "收入",
+            "market_cap": "市值",
+            "net_margin": "净利率",
+        },
+        "Español": {
+            "price": "precio",
+            "daily_change": "cambio diario",
+            "rsi": "RSI",
+            "ma5": "MA5",
+            "ma20": "MA20",
+            "put_call": "ratio Put/Call de opciones",
+            "net_gex": "GEX neto",
+            "max_pain": "max pain",
+            "sentiment": "sentimiento de noticias más reciente",
+            "revenue": "ingresos",
+            "market_cap": "capitalización bursátil",
+            "net_margin": "margen neto",
+        },
+    }.get(language, {})
+    checks = (
+        (labels["price"], _multi_agent_first_available(technical.get("price"), fundamental.get("current_price"))),
+        (labels["daily_change"], _multi_agent_first_available(technical.get("daily_change_pct"), fundamental.get("daily_change_pct"))),
+        (labels["rsi"], technical.get("rsi_14")),
+        (labels["ma5"], technical.get("ma_5")),
+        (labels["ma20"], technical.get("ma_20")),
+        (labels["put_call"], options.get("put_call_ratio")),
+        (labels["net_gex"], options.get("net_gex")),
+        (labels["max_pain"], options.get("max_pain")),
+        (labels["sentiment"], sentiment.get("latest_sentiment")),
+        (labels["revenue"], fundamental.get("revenue")),
+        (labels["market_cap"], fundamental.get("market_cap")),
+        (labels["net_margin"], fundamental.get("net_margin")),
+    )
+    return [label for label, value in checks if _multi_agent_is_unavailable(value)]
+
+
+def _multi_agent_rating(technical, options, sentiment, fundamental):
+    score = 0
+    trend = str(technical.get("trend") or "").lower()
+    rsi = technical.get("rsi_14")
+    pc_ratio = options.get("put_call_ratio")
+    net_gex = options.get("net_gex")
+    net_margin = fundamental.get("net_margin")
+    revenue_growth = fundamental.get("revenue_growth_yoy")
+    sentiment_label = sentiment.get("latest_sentiment")
+    if trend == "bullish":
+        score += 1
+    elif trend == "bearish":
+        score -= 1
+    if rsi is not None and not pd.isna(rsi):
+        if rsi < 35:
+            score += 1
+        elif rsi > 70:
+            score -= 1
+    if pc_ratio is not None and not pd.isna(pc_ratio):
+        if pc_ratio < 0.8:
+            score += 1
+        elif pc_ratio > 1.2:
+            score -= 1
+    if net_gex is not None and not pd.isna(net_gex) and net_gex < 0:
+        score -= 1
+    if sentiment_label == "Positive":
+        score += 1
+    elif sentiment_label == "Negative":
+        score -= 1
+    if net_margin is not None and not pd.isna(net_margin) and net_margin > 0:
+        score += 1
+    if revenue_growth is not None and not pd.isna(revenue_growth) and revenue_growth > 0:
+        score += 1
+    if score >= 2:
+        return "BULLISH"
+    if score <= -2:
+        return "BEARISH"
+    return "NEUTRAL"
+
+
+def _localized_rating(rating, language):
+    language = _multi_agent_language(language)
+    mapping = {
+        "中文": {"BULLISH": "看涨", "BEARISH": "看跌", "NEUTRAL": "中性", "Bullish": "看涨", "Bearish": "看跌", "Neutral": "中性"},
+        "Español": {"BULLISH": "alcista", "BEARISH": "bajista", "NEUTRAL": "neutral", "Bullish": "alcista", "Bearish": "bajista", "Neutral": "neutral"},
+        "English": {"BULLISH": "bullish", "BEARISH": "bearish", "NEUTRAL": "neutral", "Bullish": "bullish", "Bearish": "bearish", "Neutral": "neutral"},
+    }
+    return mapping.get(language, mapping["English"]).get(str(rating), str(rating or mapping.get(language, mapping["English"])["NEUTRAL"]))
+
+
+def _multi_agent_chinese_money(value):
+    text = _multi_agent_metric(value, "money")
+    return text.replace("$", "") + " 美元" if text and text.startswith("$") else text
+
+
+def _multi_agent_position_text(price, level, language, label):
+    if _multi_agent_is_unavailable(price) or _multi_agent_is_unavailable(level):
+        return None
+    relation = "above" if float(price) > float(level) else "below" if float(price) < float(level) else "at"
+    distance = (float(price) - float(level)) / float(level) * 100 if float(level) else 0
+    if _multi_agent_language(language) == "中文":
+        relation_text = {"above": "高于", "below": "低于", "at": "位于"}[relation]
+        return f"价格{relation_text} {label}（{_multi_agent_chinese_money(level)}），偏离约 {distance:+.2f}%"
+    if _multi_agent_language(language) == "Español":
+        relation_text = {"above": "por encima", "below": "por debajo", "at": "en"}[relation]
+        article = "la " if label in ("MA5", "MA20") else ""
+        return f"El precio está {relation_text} de {article}{label} ({_multi_agent_metric(level, 'money')}), con una distancia aproximada de {distance:+.2f}%"
+    return f"Price is {relation} {label} ({_multi_agent_metric(level, 'money')}), about {distance:+.2f}% away"
+
+
+def _multi_agent_key_levels(technical, options, fundamental, language):
+    price = _multi_agent_first_available(technical.get("price"), fundamental.get("current_price"))
+    language = _multi_agent_language(language)
+    if language == "中文":
+        labels = {
+            "ma5": "MA5",
+            "ma20": "MA20",
+            "call_wall": "Call wall",
+            "put_wall": "Put wall",
+            "max_pain": "最大痛点",
+            "analyst_target": "分析师目标价",
+        }
+    elif language == "Español":
+        labels = {
+            "ma5": "MA5",
+            "ma20": "MA20",
+            "call_wall": "Call wall",
+            "put_wall": "Put wall",
+            "max_pain": "max pain",
+            "analyst_target": "precio objetivo de analistas",
+        }
+    else:
+        labels = {
+            "ma5": "MA5",
+            "ma20": "MA20",
+            "call_wall": "call wall",
+            "put_wall": "put wall",
+            "max_pain": "max pain",
+            "analyst_target": "analyst target",
+        }
+    candidates = [
+        (labels["ma5"], technical.get("ma_5")),
+        (labels["ma20"], technical.get("ma_20")),
+        (labels["call_wall"], options.get("call_wall")),
+        (labels["put_wall"], options.get("put_wall")),
+        (labels["max_pain"], options.get("max_pain")),
+        (labels["analyst_target"], fundamental.get("analyst_target")),
+    ]
+    levels = []
+    for label, value in candidates:
+        if _multi_agent_is_unavailable(value):
+            continue
+        text = _multi_agent_position_text(price, value, language, label)
+        fallback_value = _multi_agent_chinese_money(value) if language == "中文" else _multi_agent_metric(value, "money")
+        levels.append(text or f"{label}: {fallback_value}")
+    return levels[:6]
+
+
+def _multi_agent_localized_sentiment(sentiment_label, language):
+    label = str(sentiment_label or "Neutral")
+    if _multi_agent_language(language) == "中文":
+        return {"Positive": "正面", "Negative": "负面", "Neutral": "中性", "positive": "正面", "negative": "负面", "neutral": "中性"}.get(label, "中性")
+    if _multi_agent_language(language) == "Español":
+        return {"Positive": "positivo", "Negative": "negativo", "Neutral": "neutral", "positive": "positivo", "negative": "negativo", "neutral": "neutral"}.get(label, "neutral")
+    return {"Positive": "positive", "Negative": "negative", "Neutral": "neutral"}.get(label, label.lower())
+
+
+def _multi_agent_localized_headline_notes(headlines, ticker, language):
+    notes = []
+    for index, headline in enumerate((headlines or [])[:4], start=1):
+        text = str(headline or "").lower()
+        if any(word in text for word in POSITIVE_NEWS_KEYWORDS):
+            tone = "positive"
+        elif any(word in text for word in NEGATIVE_NEWS_KEYWORDS):
+            tone = "negative"
+        else:
+            tone = "neutral"
+        if _multi_agent_language(language) == "中文":
+            tone_text = {"positive": "偏正面", "negative": "偏负面", "neutral": "偏中性"}[tone]
+            notes.append(f"第{index}条新闻与 {ticker} 相关，关键词显示情绪{tone_text}。")
+        elif _multi_agent_language(language) == "Español":
+            tone_text = {"positive": "positivo", "negative": "negativo", "neutral": "neutral"}[tone]
+            notes.append(f"Titular {index} relacionado con {ticker}; las palabras clave sugieren un tono {tone_text}.")
+        else:
+            notes.append(f"Headline {index}: {headline}")
+    if notes:
+        return notes
+    if _multi_agent_language(language) == "中文":
+        return ["暂无可用的最新新闻标题。"]
+    if _multi_agent_language(language) == "Español":
+        return ["No hay titulares recientes disponibles."]
+    return ["No recent headlines are available."]
+
+
+def _multi_agent_localized_missing_item(item, language):
+    language = _multi_agent_language(language)
+    normalized = str(item or "").strip()
+    if not normalized:
+        return normalized
+    mapping = {
+        "price": {"中文": "现价", "Español": "precio"},
+        "daily change": {"中文": "日涨跌幅", "Español": "cambio diario"},
+        "RSI": {"中文": "RSI", "Español": "RSI"},
+        "MA5": {"中文": "MA5", "Español": "MA5"},
+        "MA20": {"中文": "MA20", "Español": "MA20"},
+        "options put/call ratio": {"中文": "期权 Put/Call 比率", "Español": "ratio Put/Call de opciones"},
+        "options Put/Call ratio": {"中文": "期权 Put/Call 比率", "Español": "ratio Put/Call de opciones"},
+        "net GEX": {"中文": "净 GEX", "Español": "GEX neto"},
+        "max pain": {"中文": "最大痛点", "Español": "max pain"},
+        "latest news sentiment": {"中文": "最新新闻情绪", "Español": "sentimiento de noticias más reciente"},
+        "revenue": {"中文": "收入", "Español": "ingresos"},
+        "market cap": {"中文": "市值", "Español": "capitalización bursátil"},
+        "net margin": {"中文": "净利率", "Español": "margen neto"},
+    }
+    return mapping.get(normalized, {}).get(language, normalized)
+
+
+def _multi_agent_report_incomplete_reason(result):
+    if not isinstance(result, dict):
+        return "OpenAI result is not a JSON object."
+    required = (
+        "overall_rating", "key_risk", "key_opportunity", "suggested_action", "final_summary",
+        "technical_analysis", "options_analysis", "sentiment_analysis", "fundamental_analysis",
+        "risk_management", "key_levels", "missing_data",
+    )
+    missing_keys = [key for key in required if key not in result]
+    if missing_keys:
+        return f"OpenAI result is missing required fields: {', '.join(missing_keys)}."
+    text_keys = [key for key in required if key not in ("key_levels", "missing_data")]
+    for key in text_keys:
+        value = result.get(key)
+        if _multi_agent_is_unavailable(value) or len(str(value).strip()) < 35:
+            return f"OpenAI field '{key}' is empty or too short."
+    if not isinstance(result.get("key_levels"), list):
+        return "OpenAI field 'key_levels' is not a list."
+    if not isinstance(result.get("missing_data"), list):
+        return "OpenAI field 'missing_data' is not a list."
+    joined = " ".join(str(result.get(key, "")) for key in text_keys).lower()
+    if "missing data: none" in joined or "missing_data: none" in joined:
+        return "OpenAI text contains a literal missing-data placeholder."
+    return None
+
+
+def _multi_agent_float(value):
+    if _multi_agent_is_unavailable(value):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _multi_agent_contains_any(text, phrases):
+    return any(phrase in text for phrase in phrases)
+
+
+def _multi_agent_report_validation_failure(result, inputs, language=None):
+    incomplete_reason = _multi_agent_report_incomplete_reason(result)
+    if incomplete_reason:
+        return incomplete_reason
+
+    technical = (inputs or {}).get("technical") or {}
+    fundamental = (inputs or {}).get("fundamental") or {}
+    options = (inputs or {}).get("options") or {}
+    price = _multi_agent_float(_multi_agent_first_available(technical.get("price"), fundamental.get("current_price")))
+    ma5 = _multi_agent_float(technical.get("ma_5"))
+    ma20 = _multi_agent_float(technical.get("ma_20"))
+    net_gex = _multi_agent_float(options.get("net_gex"))
+    put_call_ratio = _multi_agent_float(options.get("put_call_ratio"))
+
+    text_fields = (
+        "final_summary", "key_risk", "key_opportunity", "suggested_action",
+        "technical_analysis", "options_analysis", "sentiment_analysis",
+        "fundamental_analysis", "risk_management",
+    )
+    joined = " ".join(str(result.get(key, "")) for key in text_fields).lower()
+    if _multi_agent_language(language) == "中文":
+        english_phrases = (
+            "current price", "primary risk", "opportunity improves",
+            "this is not direct financial advice", "risk management",
+            "fundamental data includes",
+        )
+        if _multi_agent_contains_any(joined, english_phrases):
+            return "Language contradiction: Chinese mode result contains obvious English fallback phrases."
+    technical_text = str(result.get("technical_analysis", "")).lower()
+    options_text = str(result.get("options_analysis", "")).lower()
+    risk_text = str(result.get("risk_management", "")).lower()
+    options_and_risk = f"{options_text} {risk_text}"
+
+    above_terms = ("above ma5", "above the ma5", "over ma5", "over the ma5", "higher than ma5", "higher than the ma5", "高于ma5", "位于ma5上方", "ma5上方", "por encima de ma5", "por encima del ma5", "superior a ma5")
+    below_terms = ("below ma20", "below the ma20", "under ma20", "under the ma20", "lower than ma20", "lower than the ma20", "低于ma20", "位于ma20下方", "ma20下方", "por debajo de ma20", "por debajo del ma20", "inferior a ma20")
+    if price is not None and ma5 is not None and price < ma5 and _multi_agent_contains_any(technical_text, above_terms):
+        return "Metric contradiction: price is below MA5, but OpenAI says price is above MA5."
+    if price is not None and ma20 is not None and price > ma20 and _multi_agent_contains_any(technical_text, below_terms):
+        return "Metric contradiction: price is above MA20, but OpenAI says price is below MA20."
+
+    negative_gex_terms = ("negative gex", "negative gamma", "gex negativo", "gamma negativa", "负gex", "负 gamma", "负gamma", "负伽马")
+    volatility_terms = ("volatility", "volatile", "amplif", "magnif", "波动", "放大", "加剧", "volatilidad", "volátil")
+    if net_gex is not None and net_gex < 0:
+        describes_negative_gex = _multi_agent_contains_any(options_and_risk, negative_gex_terms)
+        describes_volatility = _multi_agent_contains_any(options_and_risk, volatility_terms)
+        if not (describes_negative_gex and describes_volatility):
+            return "Metric contradiction: net GEX is negative, but OpenAI did not describe negative GEX as volatility-amplifying."
+
+    call_dominated_terms = ("call-dominated", "call dominated", "calls dominate", "call-heavy", "call heavy", "dominated by calls", "call主导", "看涨期权主导", "看涨主导", "dominado por calls", "dominado por call", "predominio de calls")
+    if put_call_ratio is not None and put_call_ratio > 1.5 and _multi_agent_contains_any(joined, call_dominated_terms):
+        return "Metric contradiction: put/call ratio is above 1.5, but OpenAI describes options positioning as call-dominated."
+    return None
+
+
+def _multi_agent_report_is_incomplete(result):
+    return _multi_agent_report_incomplete_reason(result) is not None
+
+
+
+def _localized_multi_agent_fallback(ticker, inputs, language, error=None):
+    language = _multi_agent_language(language)
+    technical = inputs.get("technical") or {}
+    fundamental = inputs.get("fundamental") or {}
+    options = inputs.get("options") or {}
+    sentiment = inputs.get("sentiment") or {}
+    headlines = sentiment.get("latest_headlines") or []
+    missing = _multi_agent_missing_labels(inputs, language)
+    price = _multi_agent_first_available(technical.get("price"), fundamental.get("current_price"))
+    daily_change = _multi_agent_first_available(technical.get("daily_change_pct"), fundamental.get("daily_change_pct"))
+    rating = _multi_agent_rating(technical, options, sentiment, fundamental)
+    rating_text = _localized_rating(rating, language)
+    trend = technical.get("trend") or None
+    localized_trend = _localized_rating(str(trend or "NEUTRAL").upper(), language) if trend else multi_agent_text("unavailable", language)
+    rsi = _multi_agent_metric(technical.get("rsi_14"))
+    ma5 = _multi_agent_metric(technical.get("ma_5"), "money")
+    ma20 = _multi_agent_metric(technical.get("ma_20"), "money")
+    call_oi = _multi_agent_metric(options.get("total_call_oi"))
+    put_oi = _multi_agent_metric(options.get("total_put_oi"))
+    pc_ratio = _multi_agent_metric(options.get("put_call_ratio"), "ratio")
+    net_gex = _multi_agent_metric(options.get("net_gex"), "money0")
+    max_pain = _multi_agent_metric(options.get("max_pain"), "money0")
+    call_wall = _multi_agent_metric(options.get("call_wall"), "money0")
+    put_wall = _multi_agent_metric(options.get("put_wall"), "money0")
+    expiry = options.get("nearest_expiration") or multi_agent_text("unavailable", language)
+    revenue = _multi_agent_metric(fundamental.get("revenue"), "money")
+    market_cap = _multi_agent_metric(fundamental.get("market_cap"), "money")
+    net_margin = _multi_agent_metric(fundamental.get("net_margin"), "percent")
+    trailing_pe = _multi_agent_metric(fundamental.get("trailing_pe"), "ratio")
+    forward_pe = _multi_agent_metric(fundamental.get("forward_pe"), "ratio")
+    price_to_book = _multi_agent_metric(fundamental.get("price_to_book"), "ratio")
+    revenue_growth = _multi_agent_metric(fundamental.get("revenue_growth_yoy"), "percent")
+    analyst_target = _multi_agent_metric(fundamental.get("analyst_target"), "money")
+    sentiment_label = _multi_agent_localized_sentiment(sentiment.get("latest_sentiment"), language)
+    price_text = _multi_agent_metric(price, "money") or multi_agent_text("unavailable", language)
+    change_text = _multi_agent_metric(daily_change, "percent_points") or multi_agent_text("unavailable", language)
+    ma5_relation = _multi_agent_position_text(price, technical.get("ma_5"), language, "MA5")
+    ma20_relation = _multi_agent_position_text(price, technical.get("ma_20"), language, "MA20")
+    max_pain_label = "最大痛点" if language == "中文" else "max pain"
+    max_pain_relation = _multi_agent_position_text(price, options.get("max_pain"), language, max_pain_label)
+    headline_notes = _multi_agent_localized_headline_notes(headlines, ticker, language)
+    key_levels = _multi_agent_key_levels(technical, options, fundamental, language)
+    negative_gex = not _multi_agent_is_unavailable(options.get("net_gex")) and float(options.get("net_gex")) < 0
+    high_daily_move = not _multi_agent_is_unavailable(daily_change) and abs(float(daily_change)) >= 3
+    rsi_value = technical.get("rsi_14")
+    rsi_extreme = not _multi_agent_is_unavailable(rsi_value) and (float(rsi_value) >= 70 or float(rsi_value) <= 30)
+
+    unavailable = multi_agent_text("unavailable", language)
+    if language == "中文":
+        result = {
+            "ticker": ticker, "source": "fallback", "error": error, "no_data": inputs.get("no_data", False),
+            "final_summary": f"{ticker} 当前规则版综合判断为{rating_text}。现价为 {price_text}，日涨跌幅为 {change_text}，技术趋势为{localized_trend}；期权端 Put/Call OI 比率为 {pc_ratio or unavailable}，净 GEX 为 {net_gex or unavailable}。该评级综合了技术面、期权结构、新闻情绪和基本面数据，同时需要注意市场波动和数据口径不确定性。",
+            "overall_rating": rating_text,
+            "key_risk": "主要风险来自估值波动和期权结构。当前净 GEX 为负，可能放大价格波动；如果价格跌破关键支撑位，短线风险可能上升。" if negative_gex else f"主要风险来自估值波动和期权结构。当前净 GEX 为 {net_gex or unavailable}，暂未显示明显的负 GEX 放大效应；如果价格跌破关键支撑位，短线风险可能上升。",
+            "key_opportunity": "主要机会来自技术趋势改善、新闻情绪回暖以及盈利能力保持稳定。如果价格重新站上关键均线并突破 Call wall，走势会更清晰。",
+            "suggested_action": "这不是投资建议。可以等待价格行为、期权墙和基本面数据进一步确认；使用杠杆的投资者应提前设定失效价位和仓位上限。",
+            "technical_analysis": f"技术面方面，现价为 {price_text}，日涨跌幅为 {change_text}，RSI 为 {rsi or unavailable}，MA5 为 {ma5 or unavailable}，MA20 为 {ma20 or unavailable}。{ma5_relation or '价格与 MA5 的关系暂不可用'}；{ma20_relation or '价格与 MA20 的关系暂不可用'}。当前技术趋势为{localized_trend}；RSI 极端区间可能增加反转风险。关键观察位置包括 MA20、Call wall {call_wall or unavailable}、Put wall {put_wall or unavailable} 和最大痛点 {max_pain or unavailable}。",
+            "options_analysis": f"最近到期日为 {expiry}。Put/Call OI 比率为 {pc_ratio or unavailable}，Call OI 为 {call_oi or unavailable}，Put OI 为 {put_oi or unavailable}。净 GEX 为 {net_gex or unavailable}，如果为负，说明做市商对冲可能放大价格波动。Call wall 位于 {call_wall or unavailable}，可能形成上方压力；Put wall 位于 {put_wall or unavailable}，可能形成下方支撑或下行磁吸。最大痛点为 {max_pain or unavailable}。{max_pain_relation or '当前无法可靠计算价格与最大痛点的距离。'}",
+            "sentiment_analysis": f"最新新闻情绪为{sentiment_label}。{' '.join(headline_notes)} 新闻情绪会影响市场对增长、利润率和行业需求的预期，也可能与拥挤的期权仓位相互放大。",
+            "fundamental_analysis": f"基本面方面，公司收入为 {revenue or unavailable}，市值为 {market_cap or unavailable}，净利率为 {net_margin or unavailable}。估值指标包括 P/E {trailing_pe or unavailable}、Forward P/E {forward_pe or unavailable}、P/B {price_to_book or unavailable}，分析师目标价为 {analyst_target or unavailable}。收入同比增长为 {revenue_growth or unavailable}。这些数据说明公司具备成长和盈利能力，但仍需要结合行业周期、库存、毛利率和现金流进一步判断。",
+            "risk_management": "风险管理方面，当前个股波动较高，负 GEX 可能增加短线波动。使用融资或杠杆时，需要重点关注 MA5、MA20、Call wall、Put wall 和最大痛点附近的价格反应。" if negative_gex or high_daily_move else "风险管理方面，当前日内波动暂未显示极端状态，但仍需要关注期权墙和关键均线附近的价格反应。使用融资或杠杆时，需要重点关注 MA5、MA20、Call wall、Put wall 和最大痛点附近的价格反应。",
+            "key_levels": key_levels, "missing_data": missing,
+        }
+        failed_phrases = (
+            "Current price", "Primary risk", "Opportunity improves",
+            "This is not direct financial advice", "Risk management",
+            "Fundamental data includes",
+        )
+        joined = " ".join(str(result.get(key, "")) for key in (
+            "final_summary", "key_risk", "key_opportunity", "suggested_action",
+            "technical_analysis", "options_analysis", "sentiment_analysis",
+            "fundamental_analysis", "risk_management",
+        ))
+        if any(phrase in joined for phrase in failed_phrases):
+            result.update({
+                "final_summary": f"{ticker} 当前规则版综合判断为{rating_text}。现价为 {price_text}，日涨跌幅为 {change_text}，技术趋势为{localized_trend}；期权端 Put/Call OI 比率为 {pc_ratio or unavailable}，净 GEX 为 {net_gex or unavailable}。",
+                "key_risk": "主要风险来自估值波动、期权结构和关键支撑位失守。",
+                "key_opportunity": "主要机会来自技术趋势改善、新闻情绪回暖以及盈利能力保持稳定。",
+                "suggested_action": "这不是投资建议。应等待价格、期权墙和基本面数据进一步确认。",
+                "fundamental_analysis": f"基本面方面，公司收入为 {revenue or unavailable}，市值为 {market_cap or unavailable}，净利率为 {net_margin or unavailable}。",
+                "risk_management": "风险管理方面，需要关注 MA5、MA20、Call wall、Put wall 和最大痛点附近的价格反应。",
+            })
+        return result
+    if language == "Español":
+        return {
+            "ticker": ticker, "source": "fallback", "error": error, "no_data": inputs.get("no_data", False),
+            "final_summary": f"La lectura integral basada en reglas para {ticker} es {rating_text}. El precio actual es {price_text}, el cambio diario es {change_text} y la tendencia técnica es {localized_trend}; en opciones, el ratio Put/Call OI es {pc_ratio or unavailable} y el GEX neto es {net_gex or unavailable}. La calificación combina análisis técnico, estructura de opciones, sentimiento de noticias y datos fundamentales, con atención a la volatilidad y a la incertidumbre de los datos.",
+            "overall_rating": rating_text,
+            "key_risk": f"El riesgo principal proviene de la volatilidad de valoración y de la estructura de opciones. El GEX neto es {net_gex or unavailable}; {'si es negativo, puede ampliar los movimientos de precio' if negative_gex else 'por ahora no muestra una señal clara de amplificación por GEX negativo'}. Si el precio pierde soportes clave, el riesgo de corto plazo puede aumentar.",
+            "key_opportunity": "La oportunidad principal proviene de una mejora de la tendencia técnica, una recuperación del sentimiento de noticias y una rentabilidad estable. Si el precio recupera medias clave y supera el Call wall, la lectura será más clara.",
+            "suggested_action": "Esto no es asesoramiento financiero. Conviene esperar más confirmación de la acción del precio, los muros de opciones y los datos fundamentales; los inversores con apalancamiento deberían definir de antemano niveles de invalidación y límites de posición.",
+            "technical_analysis": f"En análisis técnico, el precio actual es {price_text}, el cambio diario es {change_text}, el RSI es {rsi or unavailable}, la MA5 es {ma5 or unavailable} y la MA20 es {ma20 or unavailable}. {ma5_relation or 'La relación del precio con la MA5 no está disponible'}; {ma20_relation or 'la relación del precio con la MA20 no está disponible'}. La tendencia técnica es {localized_trend}; los extremos del RSI pueden elevar el riesgo de reversión. Los niveles relevantes incluyen la MA20, el Call wall {call_wall or unavailable}, el Put wall {put_wall or unavailable} y el max pain {max_pain or unavailable}.",
+            "options_analysis": f"El vencimiento más cercano es {expiry}. El ratio Put/Call OI es {pc_ratio or unavailable}, el Call OI es {call_oi or unavailable} y el Put OI es {put_oi or unavailable}. El GEX neto es {net_gex or unavailable}; si es negativo, la cobertura de los creadores de mercado puede amplificar la volatilidad. El Call wall está en {call_wall or unavailable} y puede actuar como resistencia; el Put wall está en {put_wall or unavailable} y puede actuar como soporte o atracción bajista. El max pain es {max_pain or unavailable}. {max_pain_relation or 'No se puede calcular de forma fiable la distancia frente al max pain.'}",
+            "sentiment_analysis": f"El sentimiento de noticias más reciente es {sentiment_label}. {' '.join(headline_notes)} El sentimiento importa porque puede cambiar las expectativas sobre crecimiento, márgenes y demanda sectorial.",
+            "fundamental_analysis": f"En fundamentales, los ingresos son {revenue or unavailable}, la capitalización bursátil es {market_cap or unavailable} y el margen neto es {net_margin or unavailable}. Las métricas de valoración incluyen P/E {trailing_pe or unavailable}, Forward P/E {forward_pe or unavailable} y P/B {price_to_book or unavailable}. El crecimiento interanual de ingresos es {revenue_growth or unavailable}. Estos datos ayudan a evaluar crecimiento y rentabilidad, pero deben combinarse con ciclo sectorial, inventarios, margen bruto y flujo de caja.",
+            "risk_management": f"En gestión del riesgo, {'el movimiento diario elevado indica volatilidad alta' if high_daily_move else 'el movimiento diario no indica volatilidad extrema por sí solo'}, y {'el GEX negativo puede aumentar la volatilidad de corto plazo' if negative_gex else 'la estructura de opciones no muestra una amplificación clara por GEX negativo'}. Con margen o apalancamiento, conviene vigilar la MA5, la MA20, el Call wall, el Put wall y las reacciones cerca del max pain.",
+            "key_levels": key_levels, "missing_data": missing,
+        }
+    return {
+        "ticker": ticker, "source": "fallback", "error": error, "no_data": inputs.get("no_data", False),
+        "final_summary": f"{ticker} has a {rating_text} rule-based read. Current price is {price_text}, daily change is {change_text}, technical trend is {localized_trend}; options show Put/Call {pc_ratio or 'unavailable'} and net GEX {net_gex or 'unavailable'}. The rating reflects the combined technical, options, sentiment, and fundamental evidence, with uncertainty from any missing fields and market volatility.",
+        "overall_rating": rating_text,
+        "key_risk": f"Primary risk is valuation and volatility. Net GEX is {net_gex or 'unavailable'}; {'negative GEX may amplify price moves' if negative_gex else 'current GEX does not show a clear negative-gamma amplifier'}. Risk can rise if price loses {put_wall or ma20 or 'a key technical level'}.",
+        "key_opportunity": f"Opportunity improves if price reclaims key averages, news sentiment improves, and profitability remains durable. A move through {call_wall or analyst_target or 'upper resistance'} with confirmation would make the setup clearer.",
+        "suggested_action": "This is not direct financial advice. Wait for confirmation from price action, options walls, and fundamental data; leveraged investors should predefine invalidation levels and position sensitivity.",
+        "technical_analysis": f"Current price is {price_text}, daily change is {change_text}, RSI is {rsi or 'unavailable'}, MA5 is {ma5 or 'unavailable'}, and MA20 is {ma20 or 'unavailable'}. {ma5_relation or 'Price versus MA5 is unavailable'}; {ma20_relation or 'price versus MA20 is unavailable'}. Momentum is {localized_trend}; RSI extremes can increase reversal risk. Key support/resistance includes MA20, call wall {call_wall or 'unavailable'}, put wall {put_wall or 'unavailable'}, and max pain {max_pain or 'unavailable'}.",
+        "options_analysis": f"Nearest expiry is {expiry}, Put/Call OI ratio is {pc_ratio or 'unavailable'}, call OI is {call_oi or 'unavailable'}, and put OI is {put_oi or 'unavailable'}. Net GEX is {net_gex or 'unavailable'}, max pain is {max_pain or 'unavailable'}, call wall is {call_wall or 'unavailable'}, and put wall is {put_wall or 'unavailable'}. {'Negative GEX may cause hedging flows to amplify volatility. ' if negative_gex else 'Net GEX does not show a clear negative-gamma volatility amplifier. '}The call wall may act as resistance; the put wall may act as support or a downside magnet if price approaches it. {max_pain_relation or 'Distance from max pain cannot be reliably calculated'}.",
+        "sentiment_analysis": f"Latest sentiment is {sentiment_label}. {' '.join(headline_notes)} Sentiment matters because news can change expectations for growth, margins, regulation, or sector demand, and can interact with crowded options positioning.",
+        "fundamental_analysis": f"Fundamental data includes revenue {revenue or 'unavailable'}, market cap {market_cap or 'unavailable'}, and net margin {net_margin or 'unavailable'}. Valuation markers are P/E {trailing_pe or 'unavailable'}, Forward P/E {forward_pe or 'unavailable'}, P/B {price_to_book or 'unavailable'}, and analyst target {analyst_target or 'unavailable'}. Profitability quality depends on whether margin and growth hold; revenue growth is {revenue_growth or 'unavailable'}, so the company profile should be viewed through high-growth, cyclical, margin-risk, or quality-compounder lenses based on the available fields.",
+        "risk_management": f"Risk management: {'the daily move suggests elevated short-term volatility; ' if high_daily_move else 'the daily move alone does not show extreme volatility; '}{'RSI is in an extreme zone, increasing reversal risk; ' if rsi_extreme else 'RSI is not in an obvious extreme zone; '}{'negative GEX can increase volatility risk.' if negative_gex else 'options structure does not show a clear negative-GEX amplifier.'} Leveraged investors should watch {', '.join(key_levels[:3]) if key_levels else 'MA20, options walls, and max pain'}, where risk may increase.",
+        "key_levels": key_levels, "missing_data": missing,
+    }
+
+def run_multi_agent_analysis(ticker, language):
+    ticker = normalize_ticker(ticker)
+    inputs = collect_multi_agent_inputs(ticker)
+    debug = {
+        "selected_ticker": ticker,
+        **inputs.get("loaded_flags", _multi_agent_loaded_flags(inputs)),
+        "openai_called": False,
+        "openai_error": None,
+        "openai_json_received": False,
+        "openai_validation_passed": False,
+        "fallback_used": False,
+        "fallback_reason": None,
+        "raw_openai_json": None,
+    }
+    if inputs.get("no_data"):
+        debug["fallback_used"] = True
+        debug["fallback_reason"] = "No input data available for multi-agent analysis."
+        result = _localized_multi_agent_fallback(ticker, inputs, language)
+        result.update({"inputs": inputs, "debug": debug})
+        return result
+    try:
+        client = get_openai_client()
+        if not client:
+            raise RuntimeError("OpenAI client unavailable.")
+        debug["openai_called"] = True
+        prompt = build_multi_agent_prompt(ticker, inputs, language)
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"},
+        )
+        raw_openai_json = response.choices[0].message.content
+        debug["raw_openai_json"] = raw_openai_json
+        debug["openai_json_received"] = bool(raw_openai_json)
+        result = json.loads(raw_openai_json)
+        fallback = _localized_multi_agent_fallback(ticker, inputs, language)
+        if "final_summary" not in result and "final_conclusion" in result:
+            result["final_summary"] = result.get("final_conclusion")
+        for key in (
+            "final_summary", "overall_rating", "key_risk", "key_opportunity", "suggested_action",
+            "technical_analysis", "options_analysis", "sentiment_analysis", "fundamental_analysis",
+            "risk_management",
+        ):
+            if _multi_agent_is_unavailable(result.get(key)):
+                result[key] = fallback.get(key)
+        if not isinstance(result.get("key_levels"), list) or not result.get("key_levels"):
+            result["key_levels"] = fallback.get("key_levels", [])
+        if not isinstance(result.get("missing_data"), list):
+            result["missing_data"] = fallback.get("missing_data", [])
+        source = "openai"
+        validation_failure = _multi_agent_report_validation_failure(result, inputs, language)
+        debug["openai_validation_passed"] = validation_failure is None
+        if validation_failure:
+            result = fallback
+            source = "fallback"
+            result["openai_incomplete"] = True
+            debug["fallback_used"] = True
+            debug["fallback_reason"] = validation_failure
+        result.update({"ticker": ticker, "source": source, "no_data": False})
+        result.update({"inputs": inputs, "debug": debug})
+        return result
+    except Exception as exc:
+        debug["openai_error"] = str(exc)
+        debug["fallback_used"] = True
+        debug["fallback_reason"] = str(exc)
+        result = _localized_multi_agent_fallback(ticker, inputs, language, str(exc))
+        result.update({"inputs": inputs, "debug": debug})
+        return result
+
+
+def _multi_agent_result_state_key(ticker, language):
+    return f"multi_agent_result_{normalize_ticker(ticker)}_{_multi_agent_language(language)}"
+
+
+def render_multi_agent_debug(selected_ticker, analysis=None):
+    debug = (analysis or {}).get("debug") or {
+        "selected_ticker": normalize_ticker(selected_ticker),
+        "technical_data_loaded": False,
+        "options_data_loaded": False,
+        "news_data_loaded": False,
+        "financial_data_loaded": False,
+        "openai_called": False,
+        "openai_error": None,
+        "openai_json_received": False,
+        "openai_validation_passed": False,
+        "fallback_used": False,
+        "fallback_reason": None,
+    }
+    with st.expander("Multi-Agent Debug", expanded=False):
+        st.write(f"selected ticker: {debug.get('selected_ticker') or normalize_ticker(selected_ticker)}")
+        st.write(f"technical data loaded: {bool(debug.get('technical_data_loaded'))}")
+        st.write(f"options data loaded: {bool(debug.get('options_data_loaded'))}")
+        st.write(f"news data loaded: {bool(debug.get('news_data_loaded'))}")
+        st.write(f"financial data loaded: {bool(debug.get('financial_data_loaded'))}")
+        st.write(f"OpenAI called: {bool(debug.get('openai_called'))}")
+        st.write(f"OpenAI error: {debug.get('openai_error') or 'None'}")
+        st.write(f"OpenAI JSON received: {bool(debug.get('openai_json_received'))}")
+        st.write(f"OpenAI validation passed: {bool(debug.get('openai_validation_passed'))}")
+        st.write(f"Fallback used: {bool(debug.get('fallback_used'))}")
+        st.write(f"Fallback reason: {debug.get('fallback_reason') or 'None'}")
+        if analysis:
+            st.markdown("**Raw collected input data**")
+            st.json(analysis.get("inputs") or {})
+            raw_openai_json = debug.get("raw_openai_json")
+            if raw_openai_json:
+                st.markdown("**Raw OpenAI JSON**")
+                try:
+                    st.json(json.loads(raw_openai_json))
+                except Exception:
+                    st.code(raw_openai_json, language="json")
+
+
+def render_multi_agent_result(analysis, language):
+    if not analysis:
+        return
+    if analysis.get("no_data"):
+        st.warning(multi_agent_text("no_analysis", language))
+    if analysis.get("source") == "fallback" and not analysis.get("no_data"):
+        debug = analysis.get("debug") or {}
+        note_key = "fallback_validation_note" if debug.get("openai_json_received") and not debug.get("openai_validation_passed") else "fallback_error_note"
+        st.caption(multi_agent_text(note_key, language))
+
+    final_summary = analysis.get("final_summary") or analysis.get("final_conclusion") or multi_agent_text("no_analysis", language)
+    st.markdown(f"##### {multi_agent_text('final_summary', language)}")
+    st.info(final_summary)
+    st.markdown(f"**{multi_agent_text('overall_rating', language)}:** {analysis.get('overall_rating') or multi_agent_text('unavailable', language)}")
+    st.markdown(f"**{multi_agent_text('key_risk', language)}:** {analysis.get('key_risk') or multi_agent_text('unavailable', language)}")
+    st.markdown(f"**{multi_agent_text('key_opportunity', language)}:** {analysis.get('key_opportunity') or multi_agent_text('unavailable', language)}")
+    st.markdown(f"**{multi_agent_text('suggested_action', language)}:** {analysis.get('suggested_action') or multi_agent_text('unavailable', language)}")
+    key_levels = analysis.get("key_levels") if isinstance(analysis.get("key_levels"), list) else []
+    if key_levels:
+        st.markdown(f"**{multi_agent_text('key_levels', language)}:**")
+        for level in key_levels:
+            st.markdown(f"- {level}")
+    st.markdown(f"**{multi_agent_text('risk_management', language)}:**")
+    st.write(analysis.get("risk_management") or multi_agent_text("unavailable", language))
+
+    with st.expander(multi_agent_text("agent_details", language), expanded=True):
+        st.markdown(f"**{multi_agent_text('technical_analysis', language)}**")
+        st.write(analysis.get("technical_analysis") or multi_agent_text("no_analysis", language))
+        st.markdown(f"**{multi_agent_text('options_analysis', language)}**")
+        st.write(analysis.get("options_analysis") or multi_agent_text("no_analysis", language))
+        st.markdown(f"**{multi_agent_text('sentiment_analysis', language)}**")
+        st.write(analysis.get("sentiment_analysis") or multi_agent_text("no_analysis", language))
+        st.markdown(f"**{multi_agent_text('fundamental_analysis', language)}**")
+        st.write(analysis.get("fundamental_analysis") or multi_agent_text("no_analysis", language))
+    missing_data = analysis.get("missing_data") if isinstance(analysis.get("missing_data"), list) else []
+    if missing_data:
+        st.markdown(f"**{multi_agent_text('missing_data', language)}:**")
+        for item in missing_data:
+            st.markdown(f"- {_multi_agent_localized_missing_item(item, language)}")
+
+
+def render_multi_agent_section(language=None, watchlist=None):
+    language = _multi_agent_language(language or st.session_state.get("language", "English"))
+    watchlist = load_watchlist() if watchlist is None else list(watchlist)
+    st.caption(multi_agent_text("caption", language))
+    if not watchlist:
+        st.warning(multi_agent_text("no_analysis", language))
+        return
+
+    selected_ticker = st.selectbox(
+        multi_agent_text("select_ticker", language),
+        watchlist,
+        key="multi_agent_selected_ticker",
+    )
+    result_key = _multi_agent_result_state_key(selected_ticker, language)
+    if st.button(multi_agent_text("run_button", language), key="multi_agent"):
+        with st.spinner(f"{multi_agent_text('running', language)} {selected_ticker}..."):
+            st.session_state[result_key] = run_multi_agent_analysis(selected_ticker, language)
+    analysis = st.session_state.get(result_key)
+    render_multi_agent_debug(selected_ticker, analysis)
+    render_multi_agent_result(analysis, language)
 
 
 def render_overview_cards(snapshots):
-    columns = st.columns(len(WATCHLIST))
-    for column, ticker in zip(columns, WATCHLIST):
+    watchlist = load_watchlist()
+    columns = st.columns(max(len(watchlist), 1))
+    for column, ticker in zip(columns, watchlist):
         snapshot = snapshots.get(ticker)
         if snapshot:
             render_snapshot_card(column, snapshot)
@@ -1866,26 +4072,342 @@ def summarize_macro_snapshot(macro):
     }
 
 
-def render_macro_chart(title, history):
-    if history is None or history.empty:
-        st.caption(f"{title}: {t('historical_data_unavailable')}")
-        return
-    chart = history[["date", "value"]].dropna().set_index("date")
-    values = pd.to_numeric(chart["value"], errors="coerce").dropna()
-    if values.empty:
-        st.caption(f"{title}: {t('historical_data_unavailable')}")
-        return
-    minimum = float(values.min())
-    maximum = float(values.max())
-    padding = (maximum - minimum) * 0.1 or max(abs(maximum) * 0.05, 0.01)
-    figure = go.Figure(go.Scatter(x=chart.index, y=chart["value"], mode="lines"))
+@st.cache_data(ttl=3600)
+def get_cached_macro_snapshot():
+    track_cacheable_call()
+    track_api_call("macro_snapshot")
+    return build_macro_snapshot()
+
+
+FRED_SERIES_CODES = {
+    "cpi_yoy": "CPIAUCSL",
+    "core_cpi_yoy": "CPILFESL",
+    "pce_yoy": "PCEPI",
+    "core_pce_yoy": "PCEPILFE",
+    "unemployment_rate": "UNRATE",
+    "nonfarm_payrolls": "PAYEMS",
+    "wage_growth": "CES0500000003",
+    "job_openings": "JTSJOL",
+    "gdp": "GDPC1",
+}
+
+
+def _fred_api_key():
+    try:
+        secret_value = st.secrets.get("FRED_API_KEY")
+        if secret_value:
+            return str(secret_value)
+    except Exception:
+        pass
+    env_value = os.environ.get("FRED_API_KEY")
+    if env_value:
+        return env_value
+    env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+    if os.path.exists(env_path):
+        try:
+            with open(env_path, "r", encoding="utf-8") as handle:
+                for line in handle:
+                    line = line.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    key, value = line.split("=", 1)
+                    if key.strip() == "FRED_API_KEY":
+                        return value.strip().strip('"').strip("'")
+        except Exception:
+            return None
+    return None
+
+
+@st.cache_data(ttl=3600)
+def fetch_fred_series_history(series_id, observation_start="1990-01-01"):
+    track_cacheable_call()
+    track_api_call("fred_series")
+    api_key = _fred_api_key()
+    try:
+        if api_key:
+            response = requests.get(
+                "https://api.stlouisfed.org/fred/series/observations",
+                params={
+                    "series_id": series_id,
+                    "api_key": api_key,
+                    "file_type": "json",
+                    "observation_start": observation_start,
+                },
+                timeout=15,
+            )
+            response.raise_for_status()
+            observations = response.json().get("observations", [])
+            frame = pd.DataFrame(observations)
+            source = "FRED API"
+        else:
+            response = requests.get(
+                f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}",
+                timeout=15,
+            )
+            response.raise_for_status()
+            frame = pd.read_csv(io.StringIO(response.text))
+            source = "FRED CSV"
+    except Exception:
+        return {"name": series_id, "value": None, "source": "FRED unavailable", "history": pd.DataFrame()}
+
+    if frame.empty:
+        return {"name": series_id, "value": None, "source": source, "history": pd.DataFrame()}
+    date_column = "date" if "date" in frame.columns else "observation_date" if "observation_date" in frame.columns else None
+    value_column = "value" if "value" in frame.columns else series_id if series_id in frame.columns else None
+    if not date_column or not value_column:
+        return {"name": series_id, "value": None, "source": source, "history": pd.DataFrame()}
+    history = frame[[date_column, value_column]].rename(columns={date_column: "date", value_column: "value"}).copy()
+    history["date"] = pd.to_datetime(history["date"], errors="coerce")
+    history["value"] = pd.to_numeric(history["value"].replace(".", np.nan), errors="coerce")
+    history = history.dropna().sort_values("date")
+    latest = None if history.empty else float(history["value"].iloc[-1])
+    return {"name": series_id, "value": latest, "source": source, "history": history}
+
+
+def _fred_indicator(key):
+    series_id = FRED_SERIES_CODES[key]
+    indicator = fetch_fred_series_history(series_id)
+    return {
+        "name": series_id,
+        "value": indicator.get("value"),
+        "source": indicator.get("source", "FRED"),
+        "history": indicator.get("history", pd.DataFrame()),
+    }
+
+
+def _macro_chart_key(title):
+    return "macro_" + hashlib.md5(str(title).encode("utf-8")).hexdigest()[:12]
+
+
+def _macro_history_frame(history, value_column="value", label=None):
+    if history is None or history.empty or "date" not in history or value_column not in history:
+        return pd.DataFrame()
+    frame = history[["date", value_column]].copy()
+    frame["date"] = pd.to_datetime(frame["date"], errors="coerce")
+    frame["value"] = pd.to_numeric(frame[value_column], errors="coerce")
+    frame = frame[["date", "value"]].dropna().sort_values("date")
+    if label:
+        frame = frame.rename(columns={"value": label})
+    return frame
+
+
+def _macro_cutoff(frame, days):
+    if frame.empty:
+        return frame
+    cutoff = frame["date"].max() - pd.Timedelta(days=days)
+    return frame[frame["date"] >= cutoff]
+
+
+def _normalize_macro_frame(frame, columns):
+    normalized = frame.copy()
+    for column in columns:
+        series = pd.to_numeric(normalized[column], errors="coerce").dropna()
+        if series.empty or float(series.iloc[0]) == 0:
+            normalized[column] = np.nan
+            continue
+        normalized[column] = normalized[column] / float(series.iloc[0]) - 1
+    return normalized
+
+
+def _render_macro_line_chart(title, frame, columns, normalize=False, y_tickformat=None, height=300):
+    available = [column for column in columns if column in frame and pd.to_numeric(frame[column], errors="coerce").notna().any()]
+    if frame.empty or not available:
+        st.info(f"{title}: {t('historical_data_unavailable')}")
+        return False
+    chart = frame[["date", *available]].copy().sort_values("date")
+    if normalize:
+        chart = _normalize_macro_frame(chart, available)
+        y_tickformat = y_tickformat or ".1%"
+    figure = go.Figure()
+    for column in available:
+        series_frame = chart[["date", column]].copy()
+        series_frame[column] = pd.to_numeric(series_frame[column], errors="coerce")
+        series_frame = series_frame.dropna()
+        figure.add_trace(go.Scatter(x=series_frame["date"], y=series_frame[column], mode="lines", name=column))
     figure.update_layout(
-        height=220, margin={"l": 8, "r": 8, "t": 8, "b": 8},
-        template="plotly_dark", showlegend=False,
-        yaxis={"range": [minimum - padding, maximum + padding]},
+        title={"text": title, "x": 0.01, "xanchor": "left"},
+        height=height,
+        margin={"l": 8, "r": 8, "t": 48, "b": 8},
+        template="plotly_dark",
+        legend={"orientation": "h", "yanchor": "bottom", "y": 1.02, "xanchor": "right", "x": 1},
     )
-    st.plotly_chart(figure, use_container_width=True, key=f"macro_{title}")
-    st.caption(title)
+    if y_tickformat:
+        figure.update_yaxes(tickformat=y_tickformat)
+    st.plotly_chart(figure, use_container_width=True, key=_macro_chart_key(title))
+    return True
+
+
+def _macro_indicator_label(key):
+    labels = {
+        "core_pce_yoy": t("core_pce_yoy"),
+        "pce_yoy": t("pce_yoy"),
+        "core_cpi_yoy": t("core_cpi_yoy"),
+        "cpi_yoy": t("cpi_yoy"),
+        "unemployment_rate": t("unemployment_rate"),
+        "wage_growth": t("wage_growth"),
+        "nonfarm_payrolls": t("nonfarm_payrolls"),
+        "job_openings": t("job_openings"),
+        "gdp_yoy_growth": t("gdp_yoy_growth"),
+    }
+    return labels.get(key, key)
+
+
+def _empty_macro_indicator(name, source="unavailable"):
+    return {"name": name, "value": None, "source": source, "history": pd.DataFrame()}
+
+
+def _macro_snapshot_indicator(macro, names):
+    normalized_names = {str(name).lower().replace(" ", "_") for name in names}
+    indicators = macro.get("indicators", {}) if isinstance(macro, dict) else {}
+    for key, indicator in indicators.items():
+        key_norm = str(key).lower().replace(" ", "_")
+        item_name = str((indicator or {}).get("name", "")).lower().replace(" ", "_") if isinstance(indicator, dict) else ""
+        if key_norm in normalized_names or item_name in normalized_names:
+            return indicator
+    for name in names:
+        for container in (macro, indicators):
+            if isinstance(container, dict) and name in container:
+                value = container[name]
+                if isinstance(value, dict):
+                    return value
+                return {"name": name, "value": value, "source": "macro snapshot", "history": pd.DataFrame()}
+    return None
+
+
+def _first_available_indicator(macro, candidates):
+    for names, fetch_name in candidates:
+        snapshot_indicator = _macro_snapshot_indicator(macro, names)
+        if isinstance(snapshot_indicator, dict):
+            return snapshot_indicator, "macro snapshot"
+        if fetch_name:
+            indicator = fetch_indicator(fetch_name)
+            history = indicator.get("history") if isinstance(indicator, dict) else pd.DataFrame()
+            if isinstance(indicator, dict) and (indicator.get("value") is not None or (history is not None and not history.empty)):
+                return indicator, "fetch_indicator"
+    fetch_name = candidates[0][1] if candidates else "unknown"
+    return _empty_macro_indicator(fetch_name), "unavailable"
+
+
+def _indicator_history_yoy(indicator):
+    frame = _macro_history_frame((indicator or {}).get("history"))
+    if frame.empty:
+        return pd.DataFrame()
+    name = str((indicator or {}).get("name", "")).lower()
+    if "yoy" in name or "rate" in name or "growth" in name:
+        return frame
+    if len(frame) < 13:
+        return pd.DataFrame()
+    frame["value"] = (frame["value"] / frame["value"].shift(12) - 1) * 100
+    return frame.dropna()
+
+
+def _macro_indicator_latest(indicator, history=None):
+    if history is not None and not history.empty and "value" in history:
+        series = pd.to_numeric(history["value"], errors="coerce").dropna()
+        if not series.empty:
+            return float(series.iloc[-1])
+    value = (indicator or {}).get("value")
+    return None if value is None or pd.isna(value) else float(value)
+
+
+def _add_macro_row(rows, key, indicator, latest=None, history=None, percent=False):
+    latest_value = _macro_indicator_latest(indicator, history) if latest is None else latest
+    rows.append({
+        "Indicator": _macro_indicator_label(key),
+        "Latest": "N/A" if latest_value is None else f"{latest_value:.2f}%" if percent else f"{latest_value:,.2f}",
+        "Source": (indicator or {}).get("source", "unavailable"),
+        "Last updated": _latest_history_date(history if history is not None else (indicator or {}).get("history")),
+    })
+
+
+def _resolve_fed_macro_indicators(macro):
+    resolved = {}
+    for key in FRED_SERIES_CODES:
+        indicator = _fred_indicator(key)
+        history = indicator.get("history")
+        if history is not None and not history.empty:
+            resolved[key] = indicator
+        else:
+            resolved[key] = _empty_macro_indicator(FRED_SERIES_CODES[key], "FRED unavailable")
+    return resolved
+
+
+def _fed_indicator_ranking_rows():
+    return [
+        {"Rank": 1, "Indicator": "Core PCE", t("indicator"): t("core_pce_yoy"), t("why_it_matters"): t("fed_rank_core_pce")},
+        {"Rank": 2, "Indicator": "PCE", t("indicator"): t("pce_yoy"), t("why_it_matters"): t("fed_rank_pce")},
+        {"Rank": 3, "Indicator": "Labor market data", t("indicator"): f"{t('unemployment_rate')} / {t('wage_growth')} / {t('nonfarm_payrolls')} / {t('job_openings')}", t("why_it_matters"): t("fed_rank_labor")},
+        {"Rank": 4, "Indicator": "Core CPI", t("indicator"): t("core_cpi_yoy"), t("why_it_matters"): t("fed_rank_core_cpi")},
+        {"Rank": 5, "Indicator": "CPI", t("indicator"): t("cpi_yoy"), t("why_it_matters"): t("fed_rank_cpi")},
+    ]
+
+
+def _latest_history_date(history):
+    if history is None or history.empty or "date" not in history:
+        return ""
+    dates = pd.to_datetime(history["date"], errors="coerce").dropna()
+    return "" if dates.empty else dates.max().strftime("%Y-%m-%d")
+
+
+def _macro_latest_rows(macro, fed_indicators=None):
+    rates = macro["rates"]
+    markets = macro["markets"]
+    indicators = macro["indicators"]
+    last_updated = macro["last_updated"]
+    fed_indicators = fed_indicators or _resolve_fed_macro_indicators(macro)
+    core_pce_history = _indicator_history_yoy(fed_indicators["core_pce_yoy"])
+    pce_history = _indicator_history_yoy(fed_indicators["pce_yoy"])
+    core_cpi_history = _indicator_history_yoy(fed_indicators["core_cpi_yoy"])
+    wage_history = _indicator_history_yoy(fed_indicators["wage_growth"])
+    gdp_yoy_history = _gdp_yoy_history(fed_indicators["gdp"]["history"])
+    rows = [
+        {"Indicator": "US 10Y", "Latest": "N/A" if rates["year10"] is None else f"{rates['year10']:.2f}%", "Source": rates["source"], "Last updated": _latest_history_date(rates["history"]) or last_updated},
+        {"Indicator": "US 30Y", "Latest": "N/A" if rates["year30"] is None else f"{rates['year30']:.2f}%", "Source": rates["source"], "Last updated": _latest_history_date(rates["history"]) or last_updated},
+    ]
+    for label in ("EUR/USD", "USD/CNY", "USD/JPY", "DXY"):
+        rows.append({"Indicator": label, "Latest": format_ratio(markets[label]["value"]), "Source": markets[label]["source"], "Last updated": _latest_history_date(markets[label]["history"]) or last_updated})
+    _add_macro_row(rows, "core_pce_yoy", fed_indicators["core_pce_yoy"], history=core_pce_history, percent=True)
+    _add_macro_row(rows, "pce_yoy", fed_indicators["pce_yoy"], history=pce_history, percent=True)
+    _add_macro_row(rows, "core_cpi_yoy", fed_indicators["core_cpi_yoy"], history=core_cpi_history, percent=True)
+    _add_macro_row(rows, "cpi_yoy", fed_indicators["cpi_yoy"], history=_indicator_history_yoy(fed_indicators["cpi_yoy"]), percent=True)
+    _add_macro_row(rows, "unemployment_rate", fed_indicators["unemployment_rate"], percent=True)
+    _add_macro_row(rows, "wage_growth", fed_indicators["wage_growth"], history=wage_history, percent=True)
+    _add_macro_row(rows, "nonfarm_payrolls", fed_indicators["nonfarm_payrolls"], percent=False)
+    _add_macro_row(rows, "job_openings", fed_indicators["job_openings"], percent=False)
+    _add_macro_row(rows, "gdp_yoy_growth", fed_indicators["gdp"], history=gdp_yoy_history, percent=True)
+    for label in ("Brent crude oil", "WTI crude oil", "Gold", "Copper"):
+        rows.append({"Indicator": label, "Latest": format_money(markets[label]["value"], 2), "Source": markets[label]["source"], "Last updated": _latest_history_date(markets[label]["history"]) or last_updated})
+    return rows
+
+
+def _render_macro_latest_table(rows):
+    table = pd.DataFrame(rows)
+    table = table.rename(columns={
+        "Indicator": t("indicator"),
+        "Latest": t("latest"),
+        "Source": t("source"),
+        "Last updated": t("last_updated"),
+    })
+    st.markdown(f"#### {t('latest_macro_data')}")
+    st.dataframe(table.fillna("N/A"), use_container_width=True, hide_index=True)
+
+
+def _combine_macro_histories(series_map):
+    combined = None
+    for label, history in series_map.items():
+        frame = _macro_history_frame(history, label=label)
+        if frame.empty:
+            continue
+        combined = frame if combined is None else combined.merge(frame, on="date", how="outer")
+    return pd.DataFrame() if combined is None else combined.sort_values("date")
+
+
+def _gdp_yoy_history(history):
+    frame = _macro_history_frame(history)
+    if len(frame) < 5:
+        return pd.DataFrame()
+    frame["GDP YoY Growth"] = (frame["value"] / frame["value"].shift(4) - 1) * 100
+    return frame[["date", "GDP YoY Growth"]].dropna()
 
 
 def render_macro_section():
@@ -1895,42 +4417,110 @@ def render_macro_section():
         fetch_market_series.clear()
         fetch_indicator.clear()
         fetch_macro_calendar.clear()
+        get_cached_macro_snapshot.clear()
+        fetch_fred_series_history.clear()
         st.rerun()
-    macro = build_macro_snapshot()
+    with st.spinner("Using cached data when available..."):
+        macro = get_cached_macro_snapshot()
     rates = macro["rates"]
     markets = macro["markets"]
     indicators = macro["indicators"]
+    fed_indicators = _resolve_fed_macro_indicators(macro)
     st.caption(f"{t('last_updated')}: {macro['last_updated']} | {t('calendar_window')}: {macro['calendar']['start_date']} to {macro['calendar']['end_date']}")
-    render_metric_row([
-        (t("macro_risk_score"), f"{macro['macro_risk_score']}/10"),
-        ("US 2Y", "N/A" if rates["year2"] is None else f"{rates['year2']:.2f}%"),
-        ("US 10Y", "N/A" if rates["year10"] is None else f"{rates['year10']:.2f}%"),
-        ("US 30Y", "N/A" if rates["year30"] is None else f"{rates['year30']:.2f}%"),
-        ("10Y - 2Y", "N/A" if rates["spread_10y_2y"] is None else f"{rates['spread_10y_2y']:+.2f}%"),
-        ("10Y - 3M", "N/A" if rates["spread_10y_3m"] is None else f"{rates['spread_10y_3m']:+.2f}%"),
-    ])
+    st.markdown(
+        f"""
+        <div style="display:inline-flex;align-items:baseline;gap:0.5rem;border:1px solid rgba(250,250,250,0.16);border-radius:8px;padding:0.45rem 0.7rem;margin:0.25rem 0 0.75rem 0;">
+            <span style="font-size:0.86rem;color:rgba(250,250,250,0.72);">{html.escape(t("macro_risk_score"))}</span>
+            <span style="font-size:1.18rem;font-weight:700;">{macro['macro_risk_score']}/10</span>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    period_options = {"30D": 30, "3M": 90, "6M": 180, "1Y": 365}
+    selected_period = st.segmented_control(t("chart_period"), list(period_options), default="30D", key="macro_chart_period")
+    chart_days = period_options.get(selected_period, 30)
+
+    treasury_history = rates["history"]
+    if treasury_history is not None and not treasury_history.empty:
+        treasury_frame = treasury_history[["date"]].copy() if "date" in treasury_history else pd.DataFrame()
+        if not treasury_frame.empty:
+            treasury_frame["date"] = pd.to_datetime(treasury_frame["date"], errors="coerce")
+            if "year10" in treasury_history:
+                treasury_frame["US 10Y"] = pd.to_numeric(treasury_history["year10"], errors="coerce")
+            elif "value" in treasury_history:
+                treasury_frame["US 10Y"] = pd.to_numeric(treasury_history["value"], errors="coerce")
+            if "year30" in treasury_history:
+                treasury_frame["US 30Y"] = pd.to_numeric(treasury_history["year30"], errors="coerce")
+            treasury_frame = _macro_cutoff(treasury_frame.dropna(subset=["date"]), chart_days)
+    else:
+        treasury_frame = pd.DataFrame()
+    _render_macro_line_chart(t("us_treasury_yields"), treasury_frame, ["US 10Y", "US 30Y"], y_tickformat=".2f")
     st.caption(f"{t('treasury_source')}: {rates['source']}")
-    render_metric_row([(label, format_ratio(markets[label]["value"])) for label in ("EUR/USD", "USD/CNY", "USD/JPY", "DXY")])
-    st.caption(" | ".join(f"{label}: {markets[label]['source']}" for label in ("EUR/USD", "USD/CNY", "USD/JPY", "DXY")))
-    render_metric_row([
-        ("CPI YoY", "N/A" if macro["cpi_yoy"] is None else f"{macro['cpi_yoy']:.2f}%"),
-        ("Core CPI YoY", "N/A"),
-        ("PCE / Core PCE", "N/A"),
-        (t("unemployment"), "N/A" if indicators["unemploymentRate"]["value"] is None else f"{indicators['unemploymentRate']['value']:.2f}%"),
-        (t("gdp_growth_yoy"), "N/A" if macro["gdp_growth_yoy"] is None else f"{macro['gdp_growth_yoy']:.2f}%"),
-    ])
-    render_metric_row([(label, format_money(markets[label]["value"], 2)) for label in ("Brent crude oil", "WTI crude oil", "Gold", "Copper")])
-    st.caption(" | ".join(f"{label}: {markets[label]['source']}" for label in ("Brent crude oil", "WTI crude oil", "Gold", "Copper")))
-    chart_columns = st.columns(4)
-    with chart_columns[0]:
-        treasury_history = rates["history"]
-        render_macro_chart(t("us_10y_treasury_yield"), treasury_history.rename(columns={"year10": "value"})[["date", "value"]].dropna() if "year10" in treasury_history else pd.DataFrame())
-    with chart_columns[1]:
-        render_macro_chart("EUR/USD", markets["EUR/USD"]["history"])
-    with chart_columns[2]:
-        render_macro_chart(t("brent_crude_oil"), markets["Brent crude oil"]["history"])
-    with chart_columns[3]:
-        render_macro_chart(t("cpi_index"), indicators["CPI"]["history"])
+
+    fx_frame = _combine_macro_histories({label: markets[label]["history"] for label in ("EUR/USD", "USD/CNY", "USD/JPY", "DXY")})
+    fx_frame = _macro_cutoff(fx_frame, chart_days)
+    _render_macro_line_chart(t("fx_relative_performance"), fx_frame, ["EUR/USD", "USD/CNY", "USD/JPY", "DXY"], normalize=True)
+
+    st.info(t("fed_indicator_explanation"))
+    st.markdown(f"#### {t('fed_ranking')}")
+    st.dataframe(pd.DataFrame(_fed_indicator_ranking_rows()), use_container_width=True, hide_index=True)
+
+    inflation_histories = {
+        "core_pce_yoy": _indicator_history_yoy(fed_indicators["core_pce_yoy"]),
+        "pce_yoy": _indicator_history_yoy(fed_indicators["pce_yoy"]),
+        "core_cpi_yoy": _indicator_history_yoy(fed_indicators["core_cpi_yoy"]),
+        "cpi_yoy": _indicator_history_yoy(fed_indicators["cpi_yoy"]),
+    }
+    labor_histories = {
+        "unemployment_rate": _macro_history_frame(fed_indicators["unemployment_rate"]["history"]),
+        "wage_growth": _indicator_history_yoy(fed_indicators["wage_growth"]),
+        "nonfarm_payrolls": _macro_history_frame(fed_indicators["nonfarm_payrolls"]["history"]),
+        "job_openings": _macro_history_frame(fed_indicators["job_openings"]["history"]),
+    }
+    gdp_yoy = _gdp_yoy_history(fed_indicators["gdp"]["history"]).rename(columns={"GDP YoY Growth": _macro_indicator_label("gdp_yoy_growth")})
+    missing_series = [
+        _macro_indicator_label(key)
+        for key, history in {**inflation_histories, **labor_histories, "gdp_yoy_growth": gdp_yoy}.items()
+        if history.empty
+    ]
+    if missing_series:
+        st.warning(t("missing_macro_series").format(series=", ".join(missing_series)))
+
+    inflation_frame = _combine_macro_histories({
+        _macro_indicator_label("core_pce_yoy"): inflation_histories["core_pce_yoy"],
+        _macro_indicator_label("pce_yoy"): inflation_histories["pce_yoy"],
+        _macro_indicator_label("core_cpi_yoy"): inflation_histories["core_cpi_yoy"],
+        _macro_indicator_label("cpi_yoy"): inflation_histories["cpi_yoy"],
+    })
+    official_monthly_days = max(chart_days, 365)
+    official_quarterly_days = max(chart_days, 730)
+    inflation_frame = _macro_cutoff(inflation_frame, official_monthly_days)
+    _render_macro_line_chart(
+        t("main_inflation_chart"),
+        inflation_frame,
+        [_macro_indicator_label("core_pce_yoy"), _macro_indicator_label("pce_yoy"), _macro_indicator_label("core_cpi_yoy"), _macro_indicator_label("cpi_yoy")],
+        y_tickformat=".2f",
+    )
+
+    labor_frame = _combine_macro_histories({
+        _macro_indicator_label("unemployment_rate"): labor_histories["unemployment_rate"],
+        _macro_indicator_label("wage_growth"): labor_histories["wage_growth"],
+        _macro_indicator_label("nonfarm_payrolls"): labor_histories["nonfarm_payrolls"],
+        _macro_indicator_label("job_openings"): labor_histories["job_openings"],
+    })
+    labor_frame = _macro_cutoff(labor_frame, official_monthly_days)
+    _render_macro_line_chart(
+        t("labor_market_chart"),
+        labor_frame,
+        [_macro_indicator_label("unemployment_rate"), _macro_indicator_label("wage_growth"), _macro_indicator_label("nonfarm_payrolls"), _macro_indicator_label("job_openings")],
+        normalize=True,
+    )
+
+    economy_frame = _macro_cutoff(gdp_yoy, official_quarterly_days)
+    _render_macro_line_chart(t("economy_chart"), economy_frame, [_macro_indicator_label("gdp_yoy_growth")], y_tickformat=".2f")
+    st.caption(t("economy_chart_explanation"))
+
     st.markdown(f"#### {t('dynamic_macro_calendar')}")
     events = macro["calendar"]["events"]
     if events:
@@ -1946,6 +4536,7 @@ def render_macro_section():
             st.info(t("no_highlighted_macro_events"))
     else:
         st.info(t("economic_calendar_unavailable"))
+    _render_macro_latest_table(_macro_latest_rows(macro, fed_indicators))
     return macro
 
 
@@ -2659,53 +5250,98 @@ def render_mu_valuation_model(snapshots):
         st.dataframe(pd.DataFrame({ml("assumption"): [ml("current_mu_price"), ml("actual_capex_usd"), ml("net_cash_usd"), ml("diluted_shares_b"), "COE", ml("discount_years"), "WACC", mt("terminal_growth")], ml("value"): [f"${current_price:,.2f}", f"${actual_capex:,.3f}", f"${net_cash_b:,.3f}", f"{diluted_shares:,.3f}", f"{baseline['C2029']['coe']:.1%}", f"{baseline['C2029']['discount_years']:.1f}", f"{wacc:.1%}", f"{terminal_growth:.1%}"]}), use_container_width=True, hide_index=True)
 
 
-st.set_page_config(page_title="Equity Research Terminal", layout="wide")
-st.markdown(
-    """
-    <style>
-    .block-container {padding-top: 1.5rem; padding-bottom: 3rem; max-width: 1800px;}
-    .stock-card {background:#111827; border:1px solid #263244; border-radius:10px; padding:16px; min-height:220px;}
-    .ticker {font-size:1.25rem; font-weight:700; letter-spacing:.08em; color:#e5e7eb;}
-    .company {font-size:.8rem; color:#94a3b8; min-height:26px;}
-    .source {font-size:.68rem; color:#64748b;}
-    .price {font-size:1.65rem; font-weight:700; margin-top:12px; color:#f8fafc;}
-    .change {font-size:.85rem; margin-bottom:14px;}
-    .card-grid {display:grid; gap:8px; font-size:.72rem; color:#94a3b8;}
-    .card-grid span {display:flex; justify-content:space-between; border-top:1px solid #253044; padding-top:6px;}
-    .card-grid b {color:#e5e7eb;}
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
-st.sidebar.selectbox(t("language"), list(TRANSLATIONS), index=0, key="language")
-st.title(t("dashboard_title"))
-st.caption(t("dashboard_caption"))
+def render_watchlist_manager():
+    st.sidebar.divider()
+    st.sidebar.subheader(t("watchlist_manager"))
+    tickers = load_watchlist()
+    new_ticker = st.sidebar.text_input(t("watchlist_input"), key="watchlist_new_ticker")
+    if st.sidebar.button(t("watchlist_add"), key="watchlist_add_button"):
+        success, message_key, symbol = add_ticker_to_watchlist(new_ticker)
+        message = t(message_key)
+        if symbol:
+            message = f"{message} {symbol}"
+        if success:
+            st.sidebar.success(message)
+            st.rerun()
+        else:
+            st.sidebar.error(message)
 
-snapshots = {}
-for symbol in WATCHLIST:
-    try:
-        snapshots[symbol] = get_company_snapshot(symbol)
-    except Exception:
-        snapshots[symbol] = None
+    st.sidebar.caption(t("watchlist_current"))
+    if tickers:
+        st.sidebar.write(", ".join(tickers))
+        remove_ticker = st.sidebar.selectbox(t("watchlist_remove"), tickers, key="watchlist_remove_select")
+        if st.sidebar.button(t("watchlist_remove"), key="watchlist_remove_button"):
+            success, message_key, symbol = remove_ticker_from_watchlist(remove_ticker)
+            message = t(message_key)
+            if symbol:
+                message = f"{message} {symbol}"
+            if success:
+                st.sidebar.success(message)
+                st.rerun()
+            else:
+                st.sidebar.error(message)
 
-render_overview_cards(snapshots)
-st.divider()
 
-tabs = st.tabs([
-    t("technical_analysis"), t("options_gex"), t("value_investing"),
-    t("news_sentiment"), t("multi_agent_research"), t("macro"), mt("tab"),
-])
-with tabs[0]:
-    render_technical_section()
-with tabs[1]:
-    render_options_section()
-with tabs[2]:
-    render_value_section(snapshots)
-with tabs[3]:
-    render_news_section()
-with tabs[4]:
-    render_multi_agent_section()
-with tabs[5]:
-    render_macro_section()
-with tabs[6]:
-    render_mu_valuation_model(snapshots)
+def main():
+    st.set_page_config(page_title="Equity Research Terminal", layout="wide")
+    reset_debug_state()
+    st.markdown(
+        """
+        <style>
+        .block-container {padding-top: 1.5rem; padding-bottom: 3rem; max-width: 1800px;}
+        .stock-card {background:#111827; border:1px solid #263244; border-radius:10px; padding:16px; min-height:220px;}
+        .ticker {font-size:1.25rem; font-weight:700; letter-spacing:.08em; color:#e5e7eb;}
+        .company {font-size:.8rem; color:#94a3b8; min-height:26px;}
+        .source {font-size:.68rem; color:#64748b;}
+        .price {font-size:1.65rem; font-weight:700; margin-top:12px; color:#f8fafc;}
+        .change {font-size:.85rem; margin-bottom:14px;}
+        .card-grid {display:grid; gap:8px; font-size:.72rem; color:#94a3b8;}
+        .card-grid span {display:flex; justify-content:space-between; border-top:1px solid #253044; padding-top:6px;}
+        .card-grid b {color:#e5e7eb;}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.sidebar.selectbox(t("language"), list(TRANSLATIONS), index=0, key="language")
+    render_watchlist_manager()
+    st.title(t("dashboard_title"))
+    st.caption(t("dashboard_caption"))
+    st.caption("Using cached data when available...")
+
+    snapshots = {}
+    with st.spinner("Loading market cards..."):
+        for symbol in load_watchlist():
+            try:
+                snapshots[symbol] = get_card_snapshot(symbol)
+            except Exception:
+                snapshots[symbol] = None
+
+    render_overview_cards(snapshots)
+    st.divider()
+
+    section_labels = [
+        t("technical_analysis"), t("options_gex"), t("value_investing"),
+        t("news_sentiment"), t("multi_agent_research"), t("macro"), mt("tab"),
+    ]
+    selected_section = st.radio("Section", section_labels, horizontal=True, key="main_section_selector")
+    section_start = perf_counter()
+    if selected_section == t("technical_analysis"):
+        render_technical_section()
+    elif selected_section == t("options_gex"):
+        render_options_section()
+    elif selected_section == t("value_investing"):
+        render_value_section()
+    elif selected_section == t("news_sentiment"):
+        render_news_section()
+    elif selected_section == t("multi_agent_research"):
+        render_multi_agent_section(st.session_state.get("language", "English"), load_watchlist())
+    elif selected_section == t("macro"):
+        render_macro_section()
+    else:
+        render_mu_valuation_model(snapshots)
+    track_section_time(selected_section, perf_counter() - section_start)
+    render_debug_panel()
+
+
+if __name__ == "__main__":
+    main()
