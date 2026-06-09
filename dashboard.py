@@ -35,6 +35,8 @@ DEFAULT_WATCHLIST = ["NVDA", "MU", "SNDK", "LITE", "RKLB"]
 WATCHLIST_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "watchlist.json")
 US_MARKET_VALUATION_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "us_market_valuation.csv")
 US_MARKET_VALUATION_TTL_SECONDS = 7 * 24 * 60 * 60
+NASDAQ100_FORWARD_PE_COLUMN = "Nasdaq-100 Forward P/E"
+FORWARD_EARNINGS_YIELD_COLUMN = "Forward Earnings Yield %"
 COMPANY_NAMES = {
     "NVDA": "NVIDIA",
     "MU": "Micron",
@@ -1463,28 +1465,39 @@ def _first_existing_column(frame, candidates):
 
 def _load_existing_nasdaq100_valuation_history():
     if not os.path.exists(US_MARKET_VALUATION_FILE):
-        return pd.DataFrame(columns=["Quarter", "Nasdaq-100 P/E", "Market Score"])
+        return pd.DataFrame(columns=["Quarter", NASDAQ100_FORWARD_PE_COLUMN])
     try:
         raw = pd.read_csv(US_MARKET_VALUATION_FILE)
     except Exception:
-        return pd.DataFrame(columns=["Quarter", "Nasdaq-100 P/E", "Market Score"])
+        return pd.DataFrame(columns=["Quarter", NASDAQ100_FORWARD_PE_COLUMN])
 
     quarter_col = _first_existing_column(raw, ["Quarter", "Date", "Period"])
-    pe_col = _first_existing_column(raw, ["Nasdaq-100 P/E", "Nasdaq 100 P/E", "NDX P/E", "P/E", "PE", "pe"])
-    score_col = _first_existing_column(raw, ["Market Score", "Score", "market_score"])
+    pe_col = _first_existing_column(raw, [
+        NASDAQ100_FORWARD_PE_COLUMN,
+        "Nasdaq 100 Forward P/E",
+        "Nasdaq-100 Forward PE",
+        "Nasdaq 100 Forward PE",
+        "Forward P/E",
+        "Forward PE",
+        "Nasdaq-100 P/E",
+        "Nasdaq 100 P/E",
+        "NDX P/E",
+        "P/E",
+        "PE",
+        "pe",
+    ])
     if quarter_col is None:
-        return pd.DataFrame(columns=["Quarter", "Nasdaq-100 P/E", "Market Score"])
+        return pd.DataFrame(columns=["Quarter", NASDAQ100_FORWARD_PE_COLUMN])
 
     frame = pd.DataFrame({"Quarter": raw[quarter_col].map(_normalize_quarter_label)})
-    frame["Nasdaq-100 P/E"] = pd.to_numeric(raw[pe_col], errors="coerce") if pe_col is not None else np.nan
-    frame["Market Score"] = pd.to_numeric(raw[score_col], errors="coerce") if score_col is not None else np.nan
+    frame[NASDAQ100_FORWARD_PE_COLUMN] = pd.to_numeric(raw[pe_col], errors="coerce") if pe_col is not None else np.nan
     frame = frame.dropna(subset=["Quarter"]).drop_duplicates(subset=["Quarter"], keep="last")
     frame["_sort"] = frame["Quarter"].map(_quarter_sort_key)
     return frame.sort_values("_sort").drop(columns="_sort")
 
 
-def _quarterly_return_from_ndx():
-    track_api_call("yfinance_ndx_quarterly_return")
+def _quarterly_ndx_metrics():
+    track_api_call("yfinance_ndx_market_score")
     ndx = yf.download("^NDX", start="2007-12-01", progress=False, auto_adjust=False)
     if ndx is None or ndx.empty:
         raise ValueError("No ^NDX price data returned.")
@@ -1494,44 +1507,587 @@ def _quarterly_return_from_ndx():
     close = pd.to_numeric(close, errors="coerce").dropna()
     if close.empty:
         raise ValueError("No usable ^NDX close prices returned.")
+    moving_average_200d = close.rolling(200, min_periods=120).mean()
     try:
-        quarterly_return = close.resample("Q").last().pct_change() * 100
+        quarterly_close = close.resample("Q").last()
+        quarterly_ma_200d = moving_average_200d.resample("Q").last()
     except ValueError as exc:
         if "Q" not in str(exc):
             raise
-        quarterly_return = close.resample("QE").last().pct_change() * 100
-    frame = quarterly_return.dropna().reset_index()
-    frame.columns = ["Date", "Nasdaq-100 Quarterly Return %"]
+        quarterly_close = close.resample("QE").last()
+        quarterly_ma_200d = moving_average_200d.resample("QE").last()
+    frame = pd.DataFrame({
+        "Date": quarterly_close.index,
+        "Nasdaq-100 Close": quarterly_close.values,
+        "Nasdaq-100 200D MA": quarterly_ma_200d.reindex(quarterly_close.index).values,
+    })
     frame["Quarter"] = frame["Date"].map(_quarter_label_from_date)
-    return frame[["Quarter", "Nasdaq-100 Quarterly Return %"]]
+    frame["Nasdaq-100 Quarterly Return %"] = frame["Nasdaq-100 Close"].pct_change() * 100
+    frame["Nasdaq-100 6M Return %"] = frame["Nasdaq-100 Close"].pct_change(2) * 100
+    frame["Nasdaq-100 12M Return %"] = frame["Nasdaq-100 Close"].pct_change(4) * 100
+    frame["Nasdaq-100 vs 200D MA %"] = (
+        frame["Nasdaq-100 Close"] / frame["Nasdaq-100 200D MA"] - 1
+    ) * 100
+    frame["Nasdaq-100 Drawdown %"] = (
+        frame["Nasdaq-100 Close"] / frame["Nasdaq-100 Close"].cummax() - 1
+    ) * 100
+    return frame[[
+        "Quarter",
+        "Nasdaq-100 Quarterly Return %",
+        "Nasdaq-100 6M Return %",
+        "Nasdaq-100 12M Return %",
+        "Nasdaq-100 vs 200D MA %",
+        "Nasdaq-100 Drawdown %",
+    ]]
 
 
-@st.cache_data(ttl=US_MARKET_VALUATION_TTL_SECONDS)
+def _quarterly_yfinance_yield_series(symbol, column_name):
+    track_api_call(f"yfinance_{symbol}_market_score")
+    data = yf.download(symbol, start="2007-12-01", progress=False, auto_adjust=False)
+    if data is None or data.empty:
+        raise ValueError(f"No {symbol} yield data returned.")
+    close = data["Close"]
+    if isinstance(close, pd.DataFrame):
+        close = close.iloc[:, 0]
+    close = pd.to_numeric(close, errors="coerce").dropna()
+    if close.empty:
+        raise ValueError(f"No usable {symbol} yield data returned.")
+    try:
+        quarterly = close.resample("Q").last()
+    except ValueError as exc:
+        if "Q" not in str(exc):
+            raise
+        quarterly = close.resample("QE").last()
+    frame = quarterly.dropna().reset_index()
+    frame.columns = ["Date", column_name]
+    frame["Quarter"] = frame["Date"].map(_quarter_label_from_date)
+    frame[column_name] = pd.to_numeric(frame[column_name], errors="coerce")
+    if frame[column_name].dropna().median() > 15:
+        frame[column_name] = frame[column_name] / 10.0
+    return frame[["Quarter", column_name]]
+
+
+def _quarterly_yfinance_relative_strength(primary_symbol, secondary_symbol, column_name):
+    track_api_call(f"yfinance_{primary_symbol}_{secondary_symbol}_market_score")
+    data = yf.download([primary_symbol, secondary_symbol], start="2007-12-01", progress=False, auto_adjust=True)
+    if data is None or data.empty:
+        raise ValueError(f"No {primary_symbol}/{secondary_symbol} price data returned.")
+    close = data["Close"] if isinstance(data.columns, pd.MultiIndex) else data
+    if primary_symbol not in close or secondary_symbol not in close:
+        raise ValueError(f"No usable {primary_symbol}/{secondary_symbol} close prices returned.")
+    primary = pd.to_numeric(close[primary_symbol], errors="coerce")
+    secondary = pd.to_numeric(close[secondary_symbol], errors="coerce")
+    relative = (primary / secondary).replace([np.inf, -np.inf], np.nan).dropna()
+    if relative.empty:
+        raise ValueError(f"No usable {primary_symbol}/{secondary_symbol} relative strength data returned.")
+    try:
+        quarterly = relative.resample("Q").last()
+    except ValueError as exc:
+        if "Q" not in str(exc):
+            raise
+        quarterly = relative.resample("QE").last()
+    frame = quarterly.dropna().reset_index()
+    frame.columns = ["Date", "HYG/LQD Ratio"]
+    frame["Quarter"] = frame["Date"].map(_quarter_label_from_date)
+    frame[column_name] = frame["HYG/LQD Ratio"].pct_change(2) * 100
+    return frame[["Quarter", column_name]]
+
+
+def _quarterly_vix_metrics():
+    track_api_call("yfinance_vix_market_score")
+    vix = yf.download("^VIX", start="2007-12-01", progress=False, auto_adjust=False)
+    if vix is None or vix.empty:
+        raise ValueError("No ^VIX data returned.")
+    close = vix["Close"]
+    if isinstance(close, pd.DataFrame):
+        close = close.iloc[:, 0]
+    close = pd.to_numeric(close, errors="coerce").dropna()
+    if close.empty:
+        raise ValueError("No usable ^VIX close prices returned.")
+    try:
+        quarterly = close.resample("Q").mean()
+    except ValueError as exc:
+        if "Q" not in str(exc):
+            raise
+        quarterly = close.resample("QE").mean()
+    frame = quarterly.dropna().reset_index()
+    frame.columns = ["Date", "VIX"]
+    frame["Quarter"] = frame["Date"].map(_quarter_label_from_date)
+    return frame[["Quarter", "VIX"]]
+
+
+def _score_lower_better(value, best, worst):
+    if value is None or pd.isna(value):
+        return np.nan
+    if best == worst:
+        return 50.0
+    score = (worst - float(value)) / (worst - best) * 100
+    return float(np.clip(score, 0, 100))
+
+
+def _score_higher_better(value, worst, best):
+    if value is None or pd.isna(value):
+        return np.nan
+    if best == worst:
+        return 50.0
+    score = (float(value) - worst) / (best - worst) * 100
+    return float(np.clip(score, 0, 100))
+
+
+def _fear_greed_label(value):
+    if value is None or pd.isna(value):
+        return "N/A"
+    value = float(value)
+    if value <= 24:
+        return "Extreme Fear"
+    if value <= 44:
+        return "Fear"
+    if value <= 55:
+        return "Neutral"
+    if value <= 75:
+        return "Greed"
+    return "Extreme Greed"
+
+
+def _mean_score_with_fallback(scores):
+    values = [50.0 if score is None or pd.isna(score) else float(score) for score in scores]
+    used_fallback = any(score is None or pd.isna(score) for score in scores)
+    return float(np.clip(np.mean(values), 0, 100)), used_fallback
+
+
+def _valuation_forward_return_score(pe, earnings_yield):
+    pe_score = np.nan
+    ey_score = np.nan
+    if pe is not None and pd.notna(pe):
+        pe_value = float(pe)
+        pe_score = np.interp(
+            pe_value,
+            [18.0, 20.0, 23.0, 25.0, 30.0, 35.0],
+            [95.0, 80.0, 65.0, 55.0, 35.0, 18.0],
+            left=95.0,
+            right=10.0,
+        )
+    if earnings_yield is not None and pd.notna(earnings_yield):
+        ey_score = _score_higher_better(earnings_yield, 2.0, 5.0)
+        if pd.notna(ey_score):
+            ey_score = float(np.clip(ey_score, 10.0, 95.0))
+
+    scores = []
+    if pd.notna(pe_score):
+        scores.append((float(pe_score), 0.85))
+    if pd.notna(ey_score):
+        scores.append((float(ey_score), 0.15))
+    if not scores:
+        return 50.0, True
+    total_weight = sum(weight for _, weight in scores)
+    score = sum(score * weight for score, weight in scores) / total_weight
+    used_fallback = len(scores) < 2
+    return float(np.clip(score, 10.0, 95.0)), used_fallback
+
+
+def _market_score_components(row):
+    curve_score = _score_higher_better(row.get("10Y-Short Treasury Spread %"), -1.5, 2.0)
+    yield_curve_score, yield_curve_fallback = _mean_score_with_fallback([curve_score])
+
+    trend_position_score = _score_higher_better(row.get("Nasdaq-100 vs 200D MA %"), -20.0, 20.0)
+    yield_score = _score_lower_better(row.get("10Y Treasury Yield %"), 2.0, 6.0)
+    vix_score = _score_lower_better(row.get("VIX"), 15.0, 35.0)
+    credit_risk_appetite_score = _score_higher_better(row.get("HYG/LQD 6M Relative Strength %"), -8.0, 8.0)
+    liquidity_score, liquidity_fallback = _mean_score_with_fallback([
+        yield_score,
+        vix_score,
+        credit_risk_appetite_score,
+    ])
+
+    six_month_score = _score_higher_better(row.get("Nasdaq-100 6M Return %"), -20.0, 25.0)
+    twelve_month_score = _score_higher_better(row.get("Nasdaq-100 12M Return %"), -35.0, 45.0)
+    sentiment_score, sentiment_fallback = _mean_score_with_fallback([
+        six_month_score,
+        twelve_month_score,
+        trend_position_score,
+    ])
+
+    valuation_score, valuation_fallback = _valuation_forward_return_score(
+        row.get(NASDAQ100_FORWARD_PE_COLUMN),
+        row.get(FORWARD_EARNINGS_YIELD_COLUMN),
+    )
+
+    crowding_base = 50.0
+    twelve_month_return = row.get("Nasdaq-100 12M Return %")
+    pe = row.get(NASDAQ100_FORWARD_PE_COLUMN)
+    if pd.notna(twelve_month_return) and pd.notna(pe):
+        crowding_base += np.clip((25.0 - float(twelve_month_return)) * 1.2, -30, 20)
+        crowding_base += np.clip((28.0 - float(pe)) * 1.6, -30, 20)
+        if float(twelve_month_return) < 0 and float(pe) < 28.0:
+            crowding_base += min(20.0, abs(float(twelve_month_return)) * 0.8 + (28.0 - float(pe)) * 1.2)
+    crowding_price_score = float(np.clip(crowding_base, 0, 100))
+    crowding_score, crowding_fallback = _mean_score_with_fallback([crowding_price_score, vix_score])
+
+    final_score = (
+        yield_curve_score * 0.20
+        + liquidity_score * 0.25
+        + sentiment_score * 0.20
+        + valuation_score * 0.20
+        + crowding_score * 0.15
+    )
+    return pd.Series({
+        "Yield Curve Score": yield_curve_score,
+        "Liquidity / Credit Score": liquidity_score,
+        "Investor Sentiment / Trend Score": sentiment_score,
+        "Valuation / Forward Return Score": valuation_score,
+        "Crowding / Risk Discipline Score": crowding_score,
+        "Final Market Score": float(np.clip(final_score, 0, 100)),
+        "Yield Curve Status": "Fallback neutral" if yield_curve_fallback else "Live data: yfinance",
+        "Liquidity / Credit Status": "Fallback neutral" if liquidity_fallback else "Live data: yfinance",
+        "Investor Sentiment / Trend Status": "Fallback neutral" if sentiment_fallback else "Live data: yfinance",
+        "Valuation / Forward Return Status": "Fallback neutral" if valuation_fallback else "Live data: yfinance",
+        "Crowding / Risk Discipline Status": "Fallback neutral" if crowding_fallback else "Live data: yfinance",
+        "Uses Fallback Score": any([
+            yield_curve_fallback,
+            liquidity_fallback,
+            sentiment_fallback,
+            valuation_fallback,
+            crowding_fallback,
+        ]),
+    })
+
+
+def _us_market_score_component_rows(latest_score_row):
+    score_columns = [
+        ("Yield Curve Score", 20, "Yield Curve Status"),
+        ("Liquidity / Credit Score", 25, "Liquidity / Credit Status"),
+        ("Investor Sentiment / Trend Score", 20, "Investor Sentiment / Trend Status"),
+        ("Valuation / Forward Return Score", 20, "Valuation / Forward Return Status"),
+        ("Crowding / Risk Discipline Score", 15, "Crowding / Risk Discipline Status"),
+    ]
+    return [
+        {
+            "Component": label,
+            "Weight": f"{weight}%",
+            "Score": None if pd.isna(latest_score_row.get(label)) else round(float(latest_score_row.get(label)), 1),
+            "Status / Data Source": latest_score_row.get(status_column) or "Live data: yfinance",
+        }
+        for label, weight, status_column in score_columns
+    ]
+
+
+def _as_numeric_score(value):
+    if isinstance(value, str):
+        value = value.replace("%", "").strip()
+    numeric_value = pd.to_numeric(value, errors="coerce")
+    if pd.isna(numeric_value):
+        return np.nan
+    return float(np.clip(float(numeric_value), 0, 100))
+
+
+def _cnn_timestamp_to_date(value):
+    if value is None or pd.isna(value):
+        return pd.NaT
+    try:
+        numeric_value = float(value)
+    except (TypeError, ValueError):
+        return pd.to_datetime(value, errors="coerce").date()
+    unit = "ms" if numeric_value > 10_000_000_000 else "s"
+    return pd.to_datetime(numeric_value, unit=unit, errors="coerce").date()
+
+
+def _score_at_or_before(history, target_date):
+    if history is None or history.empty:
+        return None
+    frame = history.dropna(subset=["Date", "Fear & Greed"]).copy()
+    if frame.empty:
+        return None
+    frame["Date"] = pd.to_datetime(frame["Date"], errors="coerce")
+    frame = frame.dropna(subset=["Date"]).sort_values("Date")
+    target = pd.Timestamp(target_date)
+    values = frame[frame["Date"] <= target]
+    if values.empty:
+        return None
+    return float(values.iloc[-1]["Fear & Greed"])
+
+
+def _cnn_fear_greed_from_payload(payload, source_url=None):
+    current = payload.get("fear_and_greed") or payload.get("fearAndGreed") or {}
+    current_value = _as_numeric_score(
+        current.get("score")
+        or current.get("value")
+        or payload.get("score")
+        or payload.get("value")
+    )
+
+    historical = (
+        payload.get("fear_and_greed_historical")
+        or payload.get("fearAndGreedHistorical")
+        or payload.get("historical")
+        or {}
+    )
+    raw_points = historical.get("data") if isinstance(historical, dict) else historical
+    history_rows = []
+    if isinstance(raw_points, list):
+        for point in raw_points:
+            if not isinstance(point, dict):
+                continue
+            point_date = _cnn_timestamp_to_date(
+                point.get("x") or point.get("timestamp") or point.get("date")
+            )
+            point_value = _as_numeric_score(point.get("y") or point.get("score") or point.get("value"))
+            if pd.notna(point_date) and pd.notna(point_value):
+                history_rows.append({"Date": point_date, "Fear & Greed": point_value})
+    history = pd.DataFrame(history_rows)
+    used_historical_current = False
+    if not history.empty:
+        history = history.drop_duplicates(subset=["Date"], keep="last").sort_values("Date")
+        if pd.isna(current_value):
+            current_value = float(history.iloc[-1]["Fear & Greed"])
+            used_historical_current = True
+
+    if pd.isna(current_value):
+        raise ValueError("CNN payload did not include a usable Fear & Greed score.")
+
+    today = date.today()
+    return {
+        "current": float(current_value),
+        "label": _fear_greed_label(current_value),
+        "one_week_ago": _score_at_or_before(history, today - timedelta(days=7)),
+        "one_month_ago": _score_at_or_before(history, today - timedelta(days=30)),
+        "one_year_ago": _score_at_or_before(history, today - timedelta(days=365)),
+        "history": history,
+        "status": "Live data: CNN Fear & Greed",
+        "source": "CNN",
+        "source_caption": "Source: CNN",
+        "source_url": source_url,
+        "source_priority": "CNN historical" if used_historical_current else "CNN current",
+        "historical_available": not history.empty,
+        "debug": {
+            "cnn_source_url": source_url,
+            "cnn_used_historical_current": used_historical_current,
+        },
+    }
+
+
+@st.cache_data(ttl=60 * 60)
+def _fetch_cnn_fear_greed_index():
+    track_cacheable_call()
+    headers = {
+        "Accept": "application/json,text/plain,*/*",
+        "User-Agent": "Mozilla/5.0",
+        "Referer": "https://www.cnn.com/markets/fear-and-greed",
+    }
+    start_date = (date.today() - timedelta(days=400)).isoformat()
+    urls = [
+        "https://production.dataviz.cnn.io/index/fearandgreed/graphdata",
+        f"https://production.dataviz.cnn.io/index/fearandgreed/graphdata/{start_date}",
+    ]
+    errors = []
+    session = requests.Session()
+    session.trust_env = False
+    for url in urls:
+        try:
+            track_api_call("cnn_fear_greed")
+            response = session.get(url, headers=headers, timeout=8)
+            response.raise_for_status()
+            return _cnn_fear_greed_from_payload(response.json(), source_url=url)
+        except Exception as exc:
+            errors.append(f"{url}: {type(exc).__name__}: {exc}")
+    raise ValueError("CNN Fear & Greed unavailable: " + " | ".join(errors))
+
+
+def _safe_close_series(data, symbol=None):
+    if data is None or data.empty:
+        return pd.Series(dtype=float)
+    close = data["Close"] if isinstance(data.columns, pd.MultiIndex) else data.get("Close", data)
+    if isinstance(close, pd.DataFrame):
+        if symbol is not None and symbol in close:
+            close = close[symbol]
+        else:
+            close = close.iloc[:, 0]
+    return pd.to_numeric(close, errors="coerce").dropna()
+
+
+def _fear_greed_proxy_history():
+    track_api_call("yfinance_fear_greed_proxy")
+    symbols = ["^VIX", "^NDX", "HYG", "LQD", "QQQ", "TLT", "IEF"]
+    data = yf.download(symbols, period="2y", progress=False, auto_adjust=True, group_by="column")
+    series = {symbol: _safe_close_series(data, symbol) for symbol in symbols}
+    if series["TLT"].empty:
+        series["TLT"] = series["IEF"]
+
+    frame = pd.DataFrame({
+        "VIX": series["^VIX"],
+        "NDX": series["^NDX"],
+        "HYG": series["HYG"],
+        "LQD": series["LQD"],
+        "QQQ": series["QQQ"],
+        "TLT": series["TLT"],
+    }).dropna(how="all")
+    if frame.empty:
+        raise ValueError("No yfinance data returned for Fear & Greed proxy.")
+
+    vix_score = frame["VIX"].map(lambda value: _score_lower_better(value, 12.0, 35.0))
+    momentum_score = (frame["NDX"].pct_change(63) * 100).map(lambda value: _score_higher_better(value, -15.0, 20.0))
+    credit_ratio = frame["HYG"] / frame["LQD"]
+    credit_score = (credit_ratio.pct_change(63) * 100).map(lambda value: _score_higher_better(value, -5.0, 5.0))
+    qqq_ma50 = frame["QQQ"].rolling(50, min_periods=30).mean()
+    qqq_ma200 = frame["QQQ"].rolling(200, min_periods=120).mean()
+    breadth_proxy = ((((frame["QQQ"] / qqq_ma50) - 1) + ((frame["QQQ"] / qqq_ma200) - 1)) / 2 * 100)
+    breadth_score = breadth_proxy.map(lambda value: _score_higher_better(value, -10.0, 10.0))
+    safe_haven_ratio = frame["QQQ"] / frame["TLT"]
+    safe_haven_score = (safe_haven_ratio.pct_change(63) * 100).map(lambda value: _score_higher_better(value, -15.0, 20.0))
+
+    proxy = (
+        vix_score * 0.30
+        + momentum_score * 0.25
+        + credit_score * 0.20
+        + breadth_score * 0.15
+        + safe_haven_score * 0.10
+    )
+    history = pd.DataFrame({
+        "Date": pd.to_datetime(proxy.index).date,
+        "Fear & Greed": proxy.clip(0, 100),
+    }).dropna()
+    if history.empty:
+        raise ValueError("Fear & Greed proxy could not be calculated.")
+    return history
+
+
+@st.cache_data(ttl=6 * 60 * 60)
+def _fallback_fear_greed_index():
+    track_cacheable_call()
+    history = _fear_greed_proxy_history()
+    current = float(history.iloc[-1]["Fear & Greed"])
+    latest_date = pd.to_datetime(history.iloc[-1]["Date"]).date()
+    return {
+        "current": current,
+        "label": _fear_greed_label(current),
+        "one_week_ago": _score_at_or_before(history, latest_date - timedelta(days=7)),
+        "one_month_ago": _score_at_or_before(history, latest_date - timedelta(days=30)),
+        "one_year_ago": _score_at_or_before(history, latest_date - timedelta(days=365)),
+        "history": history,
+        "status": "Fallback proxy: yfinance",
+        "source": "yfinance proxy",
+        "source_caption": "Source: yfinance proxy",
+        "source_priority": "yfinance fallback proxy",
+        "historical_available": not history.empty,
+    }
+
+
+def get_fear_greed_index():
+    try:
+        return _fetch_cnn_fear_greed_index()
+    except Exception as cnn_error:
+        try:
+            fallback = _fallback_fear_greed_index()
+            fallback["warning"] = "CNN unavailable; using yfinance proxy."
+            fallback["debug"] = {
+                **fallback.get("debug", {}),
+                "cnn_error": str(cnn_error),
+            }
+            return fallback
+        except Exception as fallback_error:
+            return {
+                "current": None,
+                "label": "N/A",
+                "one_week_ago": None,
+                "one_month_ago": None,
+                "one_year_ago": None,
+                "history": pd.DataFrame(columns=["Date", "Fear & Greed"]),
+                "status": "Unavailable",
+                "source": "unavailable",
+                "source_caption": "Source: unavailable",
+                "historical_available": False,
+                "warning": "Fear & Greed unavailable.",
+                "debug": {
+                    "cnn_error": str(cnn_error),
+                    "fallback_error": str(fallback_error),
+                },
+            }
+
+
+@st.cache_data(ttl=7 * 24 * 60 * 60)
 def get_us_market_valuation_dashboard_data():
     track_cacheable_call()
     valuation = _load_existing_nasdaq100_valuation_history()
-    ndx_error = None
+    market_proxy_errors = []
     try:
-        returns = _quarterly_return_from_ndx()
+        market_metrics = _quarterly_ndx_metrics()
     except Exception as exc:
-        ndx_error = str(exc)
-        returns = pd.DataFrame(columns=["Quarter", "Nasdaq-100 Quarterly Return %"])
+        market_proxy_errors.append(f"^NDX: {exc}")
+        market_metrics = pd.DataFrame(columns=[
+            "Quarter",
+            "Nasdaq-100 Quarterly Return %",
+            "Nasdaq-100 6M Return %",
+            "Nasdaq-100 12M Return %",
+            "Nasdaq-100 vs 200D MA %",
+            "Nasdaq-100 Drawdown %",
+        ])
+
+    try:
+        vix_metrics = _quarterly_vix_metrics()
+    except Exception as exc:
+        market_proxy_errors.append(f"^VIX: {exc}")
+        vix_metrics = pd.DataFrame(columns=["Quarter", "VIX"])
+
+    market_proxy_series = []
+    for symbol, column_name in (
+        ("^TNX", "10Y Treasury Yield %"),
+        ("^IRX", "13W Treasury Yield %"),
+        ("^FVX", "5Y Treasury Yield %"),
+    ):
+        try:
+            market_proxy_series.append(_quarterly_yfinance_yield_series(symbol, column_name))
+        except Exception as exc:
+            market_proxy_errors.append(f"{symbol}: {exc}")
+            market_proxy_series.append(pd.DataFrame(columns=["Quarter", column_name]))
+
+    try:
+        market_proxy_series.append(_quarterly_yfinance_relative_strength("HYG", "LQD", "HYG/LQD 6M Relative Strength %"))
+    except Exception as exc:
+        market_proxy_errors.append(f"HYG/LQD: {exc}")
+        market_proxy_series.append(pd.DataFrame(columns=["Quarter", "HYG/LQD 6M Relative Strength %"]))
 
     latest_quarter = _current_quarter_label()
     if not valuation.empty:
         latest_quarter = max(latest_quarter, valuation["Quarter"].max(), key=_quarter_sort_key)
-    if not returns.empty:
-        latest_quarter = max(latest_quarter, returns["Quarter"].max(), key=_quarter_sort_key)
+    if not market_metrics.empty:
+        latest_quarter = max(latest_quarter, market_metrics["Quarter"].max(), key=_quarter_sort_key)
 
     quarters = pd.DataFrame({"Quarter": _quarter_range("2008Q1", latest_quarter)})
-    frame = quarters.merge(valuation, on="Quarter", how="left").merge(returns, on="Quarter", how="left")
+    frame = quarters.merge(valuation, on="Quarter", how="left").merge(market_metrics, on="Quarter", how="left")
+    for series_frame in market_proxy_series:
+        frame = frame.merge(series_frame, on="Quarter", how="left")
+    frame = frame.merge(vix_metrics, on="Quarter", how="left")
     frame["_sort"] = frame["Quarter"].map(_quarter_sort_key)
     frame = frame.sort_values("_sort").drop(columns="_sort")
-    frame["Earnings Yield %"] = 100 / frame["Nasdaq-100 P/E"]
+    frame[FORWARD_EARNINGS_YIELD_COLUMN] = np.where(
+        frame[NASDAQ100_FORWARD_PE_COLUMN] > 0,
+        100 / frame[NASDAQ100_FORWARD_PE_COLUMN],
+        np.nan,
+    )
+    short_rate = frame["13W Treasury Yield %"].combine_first(frame["5Y Treasury Yield %"])
+    frame["10Y-Short Treasury Spread %"] = frame["10Y Treasury Yield %"] - short_rate
+    component_frame = frame.apply(_market_score_components, axis=1)
+    frame = pd.concat([frame, component_frame], axis=1)
+    latest_score_rows = frame.dropna(subset=["Final Market Score"], how="all")
+    latest_uses_fallback = (
+        bool(latest_score_rows.iloc[-1].get("Uses Fallback Score"))
+        if not latest_score_rows.empty
+        else False
+    )
+    score_components = (
+        pd.DataFrame(_us_market_score_component_rows(latest_score_rows.iloc[-1]))
+        if not latest_score_rows.empty
+        else pd.DataFrame(columns=["Component", "Weight", "Score", "Status / Data Source"])
+    )
+    warnings = []
+    if market_proxy_errors:
+        warnings.append("Some market proxy data unavailable. Using neutral fallback values.")
     return {
         "data": frame,
         "last_updated": date.today().isoformat(),
-        "ndx_error": ndx_error,
+        "market_proxy_errors": market_proxy_errors,
+        "warnings": warnings,
+        "score_components": score_components,
+        "uses_fallback_score": latest_uses_fallback,
         "valuation_source": US_MARKET_VALUATION_FILE if os.path.exists(US_MARKET_VALUATION_FILE) else None,
     }
 
@@ -1547,6 +2103,208 @@ def _format_signed_percent_value(value):
     return "N/A" if value is None or pd.isna(value) else f"{float(value):+.1f}%"
 
 
+def _format_fear_greed_value(value):
+    return "N/A" if value is None or pd.isna(value) else f"{float(value):.0f}"
+
+
+def _us_market_summary_language(language):
+    language_text = str(language or "")
+    if language_text == "中文" or language_text.lower() in ("zh", "chinese"):
+        return "中文"
+    if language_text == "Español" or language_text.lower() in ("es", "spanish", "español") or language_text.startswith("Espa"):
+        return "Español"
+    return "English"
+
+
+def _market_score_band(score, language):
+    if score is None or pd.isna(score):
+        messages = {
+            "中文": ("数据不足", "当前 Final Market Score 暂不可用，无法判断市场区间。"),
+            "Español": ("Datos insuficientes", "El Final Market Score actual no esta disponible, por lo que no se puede clasificar el entorno de mercado."),
+            "English": ("Insufficient data", "The current Final Market Score is unavailable, so the market regime cannot be classified."),
+        }
+        return messages[_us_market_summary_language(language)]
+
+    score = float(score)
+    language = _us_market_summary_language(language)
+    if score <= 30:
+        return {
+            "中文": ("市场环境很差", "市场环境很差，风险较高，适合防守。"),
+            "Español": ("Entorno muy debil", "El entorno de mercado es muy debil, con riesgo elevado; favorece una postura defensiva."),
+            "English": ("Very weak environment", "The market environment is very weak, risk is elevated, and a defensive stance is more appropriate."),
+        }[language]
+    if score <= 50:
+        return {
+            "中文": ("市场偏弱", "市场偏弱，适合谨慎参与，控制仓位。"),
+            "Español": ("Mercado debil", "El mercado esta debil; conviene participar con cautela y controlar la exposicion."),
+            "English": ("Weak market", "The market is weak; cautious participation and position control are appropriate."),
+        }[language]
+    if score <= 70:
+        return {
+            "中文": ("中性偏乐观", "市场中性偏好，风险资产环境相对友好，但仍需要注意估值和回撤风险。"),
+            "Español": ("Neutral a favorable", "El mercado es neutral a favorable para activos de riesgo, aunque siguen importando la valoracion y el riesgo de caidas."),
+            "English": ("Neutral to constructive", "The market is neutral to constructive for risk assets, while valuation and drawdown risk still matter."),
+        }[language]
+    if score <= 85:
+        return {
+            "中文": ("市场较强", "市场较强，趋势和风险偏好较好，但需要开始注意拥挤和追高风险。"),
+            "Español": ("Mercado fuerte", "El mercado esta fuerte, con mejor tendencia y apetito por riesgo, pero aumenta el riesgo de congestion y perseguir precios."),
+            "English": ("Strong market", "The market is strong, with better trend and risk appetite, but crowding and chasing risk are becoming more important."),
+        }[language]
+    return {
+        "中文": ("市场非常强", "市场非常强，但可能过热、贪婪、交易拥挤，不适合盲目追高。"),
+        "Español": ("Mercado muy fuerte", "El mercado esta muy fuerte, pero puede estar sobrecalentado, codicioso y congestionado; no favorece perseguir precios sin disciplina."),
+        "English": ("Very strong market", "The market is very strong, but may be overheated, greedy, and crowded; blind chasing is not appropriate."),
+    }[language]
+
+
+def _fear_greed_bilingual_label(value, language):
+    label = _fear_greed_label(value)
+    language = _us_market_summary_language(language)
+    translations = {
+        "中文": {
+            "Extreme Fear": "Extreme Fear，极度恐惧",
+            "Fear": "Fear，恐惧",
+            "Neutral": "Neutral，中性",
+            "Greed": "Greed，贪婪",
+            "Extreme Greed": "Extreme Greed，极度贪婪",
+            "N/A": "N/A",
+        },
+        "Español": {
+            "Extreme Fear": "Extreme Fear, miedo extremo",
+            "Fear": "Fear, miedo",
+            "Neutral": "Neutral, neutral",
+            "Greed": "Greed, codicia",
+            "Extreme Greed": "Extreme Greed, codicia extrema",
+            "N/A": "N/A",
+        },
+        "English": {
+            "Extreme Fear": "Extreme Fear",
+            "Fear": "Fear",
+            "Neutral": "Neutral",
+            "Greed": "Greed",
+            "Extreme Greed": "Extreme Greed",
+            "N/A": "N/A",
+        },
+    }
+    return translations[language].get(label, label)
+
+
+def _score_tone(score, language):
+    if score is None or pd.isna(score):
+        return {"中文": "暂无可用分数", "Español": "sin puntuacion disponible", "English": "no score available"}[_us_market_summary_language(language)]
+    score = float(score)
+    language = _us_market_summary_language(language)
+    if score >= 70:
+        return {"中文": "当前偏强", "Español": "actualmente fuerte", "English": "currently strong"}[language]
+    if score >= 50:
+        return {"中文": "当前中性偏好", "Español": "actualmente neutral a favorable", "English": "currently neutral to constructive"}[language]
+    if score >= 30:
+        return {"中文": "当前偏弱", "Español": "actualmente debil", "English": "currently weak"}[language]
+    return {"中文": "当前很弱", "Español": "actualmente muy debil", "English": "currently very weak"}[language]
+
+
+def _render_market_score_summary(latest_score_row, fear_greed, language):
+    language = _us_market_summary_language(language)
+    score = None if latest_score_row is None else latest_score_row.get("Final Market Score")
+    pe = None if latest_score_row is None else latest_score_row.get(NASDAQ100_FORWARD_PE_COLUMN)
+    earnings_yield = None if latest_score_row is None else latest_score_row.get(FORWARD_EARNINGS_YIELD_COLUMN)
+    score_value = None if score is None or pd.isna(score) else float(score)
+    pe_text = "N/A" if pe is None or pd.isna(pe) else f"{float(pe):.1f}x"
+    earnings_yield_text = "N/A" if earnings_yield is None or pd.isna(earnings_yield) else f"{float(earnings_yield):.2f}%"
+    band_label, band_description = _market_score_band(score_value, language)
+    fear_greed_current = fear_greed.get("current")
+    fear_greed_text = "N/A" if fear_greed_current is None or pd.isna(fear_greed_current) else f"{float(fear_greed_current):.0f}"
+    fear_greed_label = _fear_greed_bilingual_label(fear_greed_current, language)
+    source_is_cnn = fear_greed.get("source") == "CNN"
+
+    component_explanations = [
+        ("Yield Curve Score", {
+            "中文": "收益率曲线分数。越高代表利率结构更正常，对经济和市场更友好；越低代表倒挂或利率压力更明显。",
+            "Español": "Puntuacion de la curva de rendimientos. Una lectura mas alta indica una estructura de tasas mas normal y favorable; una mas baja senala inversion o presion de tasas.",
+            "English": "Yield curve score. Higher means the rate structure is more normal and supportive; lower points to inversion or rate pressure.",
+        }),
+        ("Liquidity / Credit Score", {
+            "中文": "流动性和信用环境分数。越高说明融资环境和信用风险偏好较好；越低说明市场融资条件偏紧，信用压力较大。",
+            "Español": "Puntuacion de liquidez y credito. Mas alta sugiere mejores condiciones de financiacion y apetito por riesgo crediticio; mas baja indica condiciones mas estrictas.",
+            "English": "Liquidity and credit score. Higher suggests better financing conditions and credit risk appetite; lower indicates tighter funding and more credit stress.",
+        }),
+        ("Investor Sentiment / Trend Score", {
+            "中文": "投资者情绪和趋势分数。越高说明市场趋势更强，投资者更愿意买入；越低说明趋势走弱，风险偏好下降。",
+            "Español": "Puntuacion de sentimiento y tendencia. Mas alta indica una tendencia mas fuerte y mas disposicion a comprar; mas baja senala debilidad y menor apetito por riesgo.",
+            "English": "Investor sentiment and trend score. Higher indicates stronger trend and willingness to buy; lower signals weaker trend and falling risk appetite.",
+        }),
+        ("Valuation / Forward Return Score", {
+            "中文": "估值和未来收益分数。越高说明 Forward P/E 较合理，未来预期收益更有吸引力；越低说明估值偏贵，未来回报空间被压缩。",
+            "Español": "Puntuacion de valoracion y retorno esperado. Mas alta implica un Forward P/E mas razonable y retornos esperados mas atractivos; mas baja indica valoracion exigente.",
+            "English": "Valuation and forward return score. Higher means Forward P/E is more reasonable and expected returns are more attractive; lower means valuation is expensive.",
+        }),
+        ("Crowding / Risk Discipline Score", {
+            "中文": "拥挤度和风险纪律分数。越高说明市场尚未极端拥挤，风险相对可控；越低说明涨幅过大、估值过高或情绪过热，容易出现回撤。",
+            "Español": "Puntuacion de congestion y disciplina de riesgo. Mas alta indica que el mercado no esta extremadamente congestionado; mas baja senala subidas excesivas, valoracion alta o euforia.",
+            "English": "Crowding and risk discipline score. Higher means the market is not extremely crowded; lower points to stretched gains, valuation, or overheated sentiment.",
+        }),
+    ]
+
+    with st.container():
+        st.markdown("#### Market Score Summary")
+        if language == "中文":
+            st.write(
+                f"当前 Final Market Score 为 {'N/A' if score_value is None else f'{score_value:.1f}'}，"
+                f"属于“{band_label}”区间。{band_description} 这说明当前市场环境整体支持风险资产的程度需要结合估值、情绪和回撤风险一起判断，并不代表无风险买入信号。"
+            )
+            st.markdown("**子分数解读**")
+            for component, texts in component_explanations:
+                value = None if latest_score_row is None else latest_score_row.get(component)
+                score_text = "N/A" if value is None or pd.isna(value) else f"{float(value):.1f}"
+                st.markdown(f"- **{component}：{score_text}**，{_score_tone(value, language)}。{texts[language]}")
+            source_text = (
+                "当前 Fear & Greed 来自 CNN 官方数据。该指标反映市场短期恐惧或贪婪程度，只作为参考，不参与 Final Market Score。"
+                if source_is_cnn
+                else "当前 Fear & Greed 使用 yfinance proxy，因为 CNN 官方数据不可用。该指标只作为市场情绪参考，不参与 Final Market Score。"
+            )
+            st.write(f"{source_text} 当前数值为 {fear_greed_text}，属于 {fear_greed_label}。")
+            st.write(
+                f"Forward P/E 当前为 {pe_text}，表示 Nasdaq-100 基于未来预期盈利的市盈率。数值越高，代表市场对未来盈利的定价越贵。"
+            )
+            st.write(
+                f"Forward Earnings Yield 当前为 {earnings_yield_text}，公式为 Forward Earnings Yield = 100 / Forward P/E。"
+                "它表示按照未来预期盈利计算，每 100 美元指数价格对应多少美元预期盈利；越高估值越便宜，越低估值越贵。"
+            )
+            sentiment_hot = fear_greed_current is not None and pd.notna(fear_greed_current) and float(fear_greed_current) > 75
+            if score_value is not None and score_value >= 70 and sentiment_hot:
+                conclusion = "综合来看，当前市场趋势和风险偏好较强，但 Fear & Greed 已经偏高，说明短期情绪较热。当前环境适合继续观察和持有强趋势资产，但不适合盲目追高或大幅加杠杆。"
+            elif score_value is not None and score_value >= 50:
+                conclusion = "综合来看，当前市场环境对风险资产相对友好，但仍需要关注估值、情绪升温和潜在回撤风险。更适合有纪律地持有或分批参与，而不是盲目追高。"
+            else:
+                conclusion = "综合来看，当前市场环境偏弱或数据不足，风险资产的胜率不够明确。更适合控制仓位、等待趋势和流动性信号改善。"
+            st.markdown(f"**最终结论：**{conclusion}")
+        elif language == "Español":
+            st.write(f"El Final Market Score actual es {'N/A' if score_value is None else f'{score_value:.1f}'}, en la zona de \"{band_label}\". {band_description}")
+            st.markdown("**Lectura de componentes**")
+            for component, texts in component_explanations:
+                value = None if latest_score_row is None else latest_score_row.get(component)
+                score_text = "N/A" if value is None or pd.isna(value) else f"{float(value):.1f}"
+                st.markdown(f"- **{component}: {score_text}**, {_score_tone(value, language)}. {texts[language]}")
+            source_text = "Fear & Greed viene de datos oficiales de CNN." if source_is_cnn else "Fear & Greed usa un proxy de yfinance porque los datos oficiales de CNN no estan disponibles."
+            st.write(f"{source_text} Es solo una referencia de sentimiento y no participa en el Final Market Score. Valor actual: {fear_greed_text}, {fear_greed_label}.")
+            st.write(f"Forward P/E: {pe_text}. Mide el P/E del Nasdaq-100 basado en beneficios esperados; cuanto mas alto, mas cara es la valoracion.")
+            st.write(f"Forward Earnings Yield: {earnings_yield_text}. Formula: Forward Earnings Yield = 100 / Forward P/E. Cuanto mas alto, mas barata es la valoracion; cuanto mas bajo, mas cara.")
+            st.markdown("**Conclusion:** El entorno debe leerse junto con tendencia, sentimiento, valoracion y disciplina de riesgo; no es una senal para perseguir precios sin control.")
+        else:
+            st.write(f"The current Final Market Score is {'N/A' if score_value is None else f'{score_value:.1f}'}, in the \"{band_label}\" zone. {band_description}")
+            st.markdown("**Component Read-Through**")
+            for component, texts in component_explanations:
+                value = None if latest_score_row is None else latest_score_row.get(component)
+                score_text = "N/A" if value is None or pd.isna(value) else f"{float(value):.1f}"
+                st.markdown(f"- **{component}: {score_text}**, {_score_tone(value, language)}. {texts[language]}")
+            source_text = "Fear & Greed comes from official CNN data." if source_is_cnn else "Fear & Greed uses a yfinance proxy because official CNN data is unavailable."
+            st.write(f"{source_text} It is a sentiment reference only and does not feed into the Final Market Score. Current value: {fear_greed_text}, {fear_greed_label}.")
+            st.write(f"Forward P/E is {pe_text}. It is the Nasdaq-100 P/E based on expected future earnings; higher means the market is pricing those earnings more expensively.")
+            st.write(f"Forward Earnings Yield is {earnings_yield_text}. Formula: Forward Earnings Yield = 100 / Forward P/E. Higher means cheaper valuation; lower means more expensive valuation.")
+            st.markdown("**Conclusion:** Read the setup through trend, sentiment, valuation, and risk discipline; it is not a signal to chase prices without controls.")
+
+
 def _render_us_market_value_card(label, value, color):
     st.markdown(
         f"""
@@ -1559,41 +2317,44 @@ def _render_us_market_value_card(label, value, color):
     )
 
 
+def _filter_us_market_chart_frame(frame, view):
+    quarter_counts = {
+        "3Y": 12,
+        "5Y": 20,
+        "10Y": 40,
+    }
+    count = quarter_counts.get(view)
+    if count is None:
+        return frame.copy()
+    return frame.tail(count).copy()
+
+
 def _us_market_valuation_chart(frame):
     plot_frame = frame.copy()
     plot_frame["x"] = plot_frame["Quarter"]
     fig = make_subplots(
-        rows=2,
-        cols=1,
-        shared_xaxes=True,
-        vertical_spacing=0.08,
-        row_heights=[0.62, 0.38],
-        specs=[[{"secondary_y": True}], [{"secondary_y": False}]],
+        specs=[[{"secondary_y": True}]],
     )
     fig.add_trace(
         go.Scatter(
             x=plot_frame["x"],
-            y=plot_frame["Nasdaq-100 P/E"],
-            name="Nasdaq-100 P/E",
+            y=plot_frame[NASDAQ100_FORWARD_PE_COLUMN],
+            name=NASDAQ100_FORWARD_PE_COLUMN,
             mode="lines",
             line=dict(color="#2dd4bf", width=2.6),
             connectgaps=True,
         ),
-        row=1,
-        col=1,
         secondary_y=False,
     )
     fig.add_trace(
         go.Scatter(
             x=plot_frame["x"],
-            y=plot_frame["Market Score"],
-            name="Market Score",
+            y=plot_frame["Final Market Score"],
+            name="Final Market Score",
             mode="lines",
             line=dict(color="#f59e0b", width=2.2, dash="dash"),
             connectgaps=True,
         ),
-        row=1,
-        col=1,
         secondary_y=True,
     )
     fig.add_trace(
@@ -1605,31 +2366,14 @@ def _us_market_valuation_chart(frame):
             line=dict(color="#38bdf8", width=2),
             connectgaps=False,
         ),
-        row=1,
-        col=1,
         secondary_y=True,
     )
-    fig.add_trace(
-        go.Scatter(
-            x=plot_frame["x"],
-            y=plot_frame["Nasdaq-100 Quarterly Return %"],
-            name="Nasdaq-100 Quarterly Return detail",
-            mode="lines",
-            line=dict(color="#38bdf8", width=2),
-            fill="tozeroy",
-            fillcolor="rgba(56,189,248,0.12)",
-            connectgaps=False,
-            showlegend=False,
-        ),
-        row=2,
-        col=1,
-    )
-    latest_pe = _latest_numeric(plot_frame, "Nasdaq-100 P/E")
-    latest_score = _latest_numeric(plot_frame, "Market Score")
+    latest_pe = _latest_numeric(plot_frame, NASDAQ100_FORWARD_PE_COLUMN)
+    latest_score = _latest_numeric(plot_frame, "Final Market Score")
     latest_return = _latest_numeric(plot_frame, "Nasdaq-100 Quarterly Return %")
     annotations = []
     if latest_pe is not None:
-        annotations.append(dict(x=1.01, y=latest_pe, xref="paper", yref="y", text=f"P/E: {latest_pe:.1f}x", showarrow=False, font=dict(color="#2dd4bf", size=12), xanchor="left"))
+        annotations.append(dict(x=1.01, y=latest_pe, xref="paper", yref="y", text=f"Forward P/E: {latest_pe:.1f}x", showarrow=False, font=dict(color="#2dd4bf", size=12), xanchor="left"))
     if latest_score is not None:
         annotations.append(dict(x=1.01, y=latest_score, xref="paper", yref="y2", text=f"Score: {latest_score:.1f}", showarrow=False, font=dict(color="#f59e0b", size=12), xanchor="left"))
     if latest_return is not None:
@@ -1646,48 +2390,158 @@ def _us_market_valuation_chart(frame):
         annotations=annotations,
     )
     fig.update_xaxes(showgrid=False, zeroline=False, tickangle=0, nticks=18, color="#9ca3af")
-    fig.update_yaxes(title_text="P/E", gridcolor="rgba(148,163,184,0.14)", zeroline=False, color="#9ca3af", row=1, col=1, secondary_y=False)
-    fig.update_yaxes(title_text="Score", gridcolor="rgba(148,163,184,0.08)", zeroline=False, color="#9ca3af", row=1, col=1, secondary_y=True)
-    fig.update_yaxes(title_text="Quarterly Return %", gridcolor="rgba(148,163,184,0.14)", zeroline=True, zerolinecolor="rgba(255,255,255,0.25)", color="#9ca3af", row=2, col=1)
+    fig.update_yaxes(title_text="Forward P/E", gridcolor="rgba(148,163,184,0.14)", zeroline=False, color="#9ca3af", secondary_y=False)
+    fig.update_yaxes(title_text="Score / Quarterly Return %", gridcolor="rgba(148,163,184,0.08)", zeroline=True, zerolinecolor="rgba(255,255,255,0.25)", color="#9ca3af", secondary_y=True)
     return fig
 
 
+def _render_fear_greed_expander(fear_greed):
+    with st.expander("Fear & Greed Index", expanded=False):
+        current = fear_greed.get("current")
+        label = fear_greed.get("label") or _fear_greed_label(current)
+        status = fear_greed.get("status") or "Unavailable"
+        source_caption = fear_greed.get("source_caption") or "Source: unavailable"
+        is_cnn = fear_greed.get("source") == "CNN"
+        source_label = "CNN" if is_cnn else "Proxy"
+        if current is None or pd.isna(current):
+            st.markdown("**Current:** N/A")
+            st.caption(f"Status: {status}")
+            st.caption(source_caption)
+            if fear_greed.get("warning"):
+                st.info(str(fear_greed["warning"]))
+            return
+
+        st.markdown(f"**{source_label} Current:** {_format_fear_greed_value(current)} · {label}")
+        st.caption(f"Status: {status}")
+        st.caption(source_caption)
+        if fear_greed.get("warning"):
+            st.info(str(fear_greed["warning"]))
+
+        history_values = [
+            ("1 week ago", fear_greed.get("one_week_ago")),
+            ("1 month ago", fear_greed.get("one_month_ago")),
+            ("1 year ago", fear_greed.get("one_year_ago")),
+        ]
+        available_history = [(period, value) for period, value in history_values if value is not None and pd.notna(value)]
+        if available_history:
+            st.dataframe(
+                pd.DataFrame([
+                    {
+                        "Period": period,
+                        "Value": _format_fear_greed_value(value),
+                        "Status": _fear_greed_label(value),
+                        "Source": "CNN historical" if is_cnn else "Proxy historical",
+                    }
+                    for period, value in history_values
+                ]),
+                use_container_width=True,
+                hide_index=True,
+            )
+        else:
+            st.info("historical values unavailable")
+
+        history = fear_greed.get("history")
+        if isinstance(history, pd.DataFrame) and not history.empty:
+            fg_fig = go.Figure()
+            fg_fig.add_trace(go.Scatter(
+                x=history["Date"],
+                y=history["Fear & Greed"],
+                name="CNN Fear & Greed Index" if is_cnn else "Fear & Greed Index (yfinance proxy)",
+                mode="lines",
+                line=dict(color="#c084fc", width=2),
+            ))
+            fg_fig.update_layout(
+                height=300,
+                paper_bgcolor="#050608",
+                plot_bgcolor="#050608",
+                font=dict(color="#d1d5db"),
+                margin=dict(l=50, r=30, t=30, b=45),
+                yaxis_title="0-100",
+                hovermode="x unified",
+            )
+            fg_fig.update_xaxes(showgrid=False, color="#9ca3af", nticks=12)
+            fg_fig.update_yaxes(range=[0, 100], gridcolor="rgba(148,163,184,0.14)", color="#9ca3af")
+            st.plotly_chart(fg_fig, use_container_width=True)
+
 def render_us_market_valuation_dashboard():
     st.markdown("### US Market Valuation Dashboard")
-    st.caption("Nasdaq-100 valuation and quarterly return history from 2008Q1 to the latest available quarter.")
+    chart_view = st.radio(
+        "Time range",
+        ["3Y", "5Y", "10Y", "All"],
+        index=1,
+        horizontal=True,
+        label_visibility="collapsed",
+        key="us_market_valuation_chart_view",
+    )
+    st.caption(f"Quarterly · {chart_view} view · 2008Q1-latest available quarter")
     dashboard = get_us_market_valuation_dashboard_data()
+    fear_greed = get_fear_greed_index()
     frame = dashboard["data"]
+    chart_frame = _filter_us_market_chart_frame(frame, chart_view)
     st.caption(f"Last updated: {dashboard['last_updated']}")
-    if dashboard["ndx_error"]:
-        st.warning(f"^NDX quarterly return data unavailable from yfinance: {dashboard['ndx_error']}")
+    for warning in dashboard.get("warnings", []):
+        st.warning(warning)
     if not dashboard["valuation_source"]:
-        st.warning("Nasdaq-100 P/E and Market Score history not found. Add data/us_market_valuation.csv with Quarter, Nasdaq-100 P/E, and Market Score columns to populate those series.")
-    if frame.empty or frame[["Nasdaq-100 P/E", "Market Score", "Nasdaq-100 Quarterly Return %"]].dropna(how="all").empty:
+        st.warning("Nasdaq-100 Forward P/E history not found. Add data/us_market_valuation.csv with Quarter and Nasdaq-100 Forward P/E columns to populate the valuation series.")
+    if frame.empty or frame[[NASDAQ100_FORWARD_PE_COLUMN, "Final Market Score", "Nasdaq-100 Quarterly Return %"]].dropna(how="all").empty:
         st.info("No US market valuation data available yet.")
         return
 
-    pe = _latest_numeric(frame, "Nasdaq-100 P/E")
-    score = _latest_numeric(frame, "Market Score")
+    pe = _latest_numeric(frame, NASDAQ100_FORWARD_PE_COLUMN)
+    score = _latest_numeric(frame, "Final Market Score")
     quarterly_return = _latest_numeric(frame, "Nasdaq-100 Quarterly Return %")
-    card_cols = st.columns(3)
+    fear_greed_current = fear_greed.get("current")
+    fear_greed_label = fear_greed.get("label") or _fear_greed_label(fear_greed_current)
+    card_cols = st.columns(4)
     with card_cols[0]:
-        _render_us_market_value_card("P/E", "N/A" if pe is None else f"{pe:.1f}x", "#2dd4bf")
+        _render_us_market_value_card("Forward P/E", "N/A" if pe is None else f"{pe:.1f}x", "#2dd4bf")
     with card_cols[1]:
-        _render_us_market_value_card("Score", "N/A" if score is None else f"{score:.1f}", "#f59e0b")
+        _render_us_market_value_card("Final Market Score", "N/A" if score is None else f"{score:.1f}", "#f59e0b")
     with card_cols[2]:
         _render_us_market_value_card("Quarterly Return", _format_signed_percent_value(quarterly_return), "#38bdf8")
-    st.plotly_chart(_us_market_valuation_chart(frame), use_container_width=True)
+    with card_cols[3]:
+        fear_greed_card_value = "N/A" if fear_greed_current is None or pd.isna(fear_greed_current) else f"{float(fear_greed_current):.0f} · {fear_greed_label}"
+        _render_us_market_value_card("Fear & Greed", fear_greed_card_value, "#c084fc")
+        st.caption(fear_greed.get("source_caption") or "Source: unavailable")
+        if fear_greed.get("warning"):
+            st.info(str(fear_greed["warning"]))
+    st.plotly_chart(_us_market_valuation_chart(chart_frame), use_container_width=True)
 
-    with st.expander("Earnings Yield", expanded=False):
-        earnings_yield_frame = frame[["Quarter", "Earnings Yield %"]].dropna()
+    latest_score_rows = frame.dropna(subset=["Final Market Score"], how="all")
+    latest_score_row = latest_score_rows.iloc[-1] if not latest_score_rows.empty else None
+    _render_market_score_summary(latest_score_row, fear_greed, st.session_state.get("language", "English"))
+
+    score_components = dashboard.get("score_components")
+    if score_components is not None and not score_components.empty:
+        fear_greed_is_cnn = fear_greed.get("source") == "CNN"
+        fear_greed_reference_component = (
+            "CNN Fear & Greed Index"
+            if fear_greed_is_cnn
+            else "Fear & Greed Index (yfinance proxy)"
+        )
+        fear_greed_reference_status = "Live data: CNN" if fear_greed_is_cnn else "Fallback proxy: yfinance"
+        reference_row = pd.DataFrame([{
+            "Component": fear_greed_reference_component,
+            "Weight": "Reference only",
+            "Score": None if fear_greed_current is None or pd.isna(fear_greed_current) else round(float(fear_greed_current), 1),
+            "Status / Data Source": fear_greed_reference_status,
+        }])
+        score_components = pd.concat([score_components, reference_row], ignore_index=True)
+        st.markdown("#### Latest Quarterly Score Components")
+        st.dataframe(score_components, use_container_width=True, hide_index=True)
+
+    _render_fear_greed_expander(fear_greed)
+
+    with st.expander("Forward Earnings Yield", expanded=False):
+        earnings_yield_frame = chart_frame[["Quarter", FORWARD_EARNINGS_YIELD_COLUMN]].dropna()
         if earnings_yield_frame.empty:
-            st.info("Earnings Yield is unavailable until Nasdaq-100 P/E history is available.")
+            st.info("Forward Earnings Yield is unavailable until Nasdaq-100 Forward P/E history is available.")
         else:
             ey_fig = go.Figure()
             ey_fig.add_trace(go.Scatter(
                 x=earnings_yield_frame["Quarter"],
-                y=earnings_yield_frame["Earnings Yield %"],
-                name="Earnings Yield",
+                y=earnings_yield_frame[FORWARD_EARNINGS_YIELD_COLUMN],
+                name="Forward Earnings Yield",
                 mode="lines",
                 line=dict(color="#a7f3d0", width=2),
             ))

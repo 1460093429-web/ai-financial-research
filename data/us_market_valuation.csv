@@ -1,4 +1,4 @@
-Quarter,Nasdaq-100 P/E,Market Score
+Quarter,Nasdaq-100 Forward P/E,Market Score
 2008Q1,23.5,44
 2008Q2,22.0,40
 2008Q3,18.5,31
@@ -72,4 +72,4 @@ Quarter,Nasdaq-100 P/E,Market Score
 2025Q3,41.0,88
 2025Q4,43.0,92
 2026Q1,40.5,81
-2026Q2,42.0,86
+2026Q2,23.38,86
