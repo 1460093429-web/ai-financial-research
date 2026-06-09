@@ -14,6 +14,7 @@ import feedparser
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import requests
 from scipy.stats import norm
 import streamlit as st
@@ -32,6 +33,8 @@ FMP_BASE_URL = "https://financialmodelingprep.com/stable"
 CARD_FINANCIAL_TTL_SECONDS = 21600
 DEFAULT_WATCHLIST = ["NVDA", "MU", "SNDK", "LITE", "RKLB"]
 WATCHLIST_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "watchlist.json")
+US_MARKET_VALUATION_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "us_market_valuation.csv")
+US_MARKET_VALUATION_TTL_SECONDS = 7 * 24 * 60 * 60
 COMPANY_NAMES = {
     "NVDA": "NVIDIA",
     "MU": "Micron",
@@ -1404,6 +1407,302 @@ def render_value_section(snapshots=None):
                 (t("upside_downside"), "N/A" if snapshot["analyst_upside_pct"] is None else f"{snapshot['analyst_upside_pct']:+.1f}%"),
                 (t("analyst_rating"), snapshot.get("analyst_rating") or "N/A"),
             ])
+
+
+def _quarter_label_from_date(value):
+    timestamp = pd.to_datetime(value, errors="coerce")
+    if pd.isna(timestamp):
+        return None
+    return f"{timestamp.year}Q{timestamp.quarter}"
+
+
+def _normalize_quarter_label(value):
+    if value is None or pd.isna(value):
+        return None
+    text = str(value).strip().upper().replace(" ", "")
+    match = re.fullmatch(r"(\d{4})Q([1-4])", text)
+    if match:
+        return f"{match.group(1)}Q{match.group(2)}"
+    return _quarter_label_from_date(value)
+
+
+def _quarter_sort_key(quarter):
+    match = re.fullmatch(r"(\d{4})Q([1-4])", str(quarter or ""))
+    if not match:
+        return pd.NA
+    return int(match.group(1)) * 4 + int(match.group(2))
+
+
+def _current_quarter_label():
+    today = pd.Timestamp.today()
+    return f"{today.year}Q{today.quarter}"
+
+
+def _quarter_range(start_quarter="2008Q1", end_quarter=None):
+    end_quarter = end_quarter or _current_quarter_label()
+    start_key = _quarter_sort_key(start_quarter)
+    end_key = _quarter_sort_key(end_quarter)
+    if pd.isna(start_key) or pd.isna(end_key) or end_key < start_key:
+        return []
+    labels = []
+    for key in range(int(start_key), int(end_key) + 1):
+        year = (key - 1) // 4
+        quarter = key - year * 4
+        labels.append(f"{year}Q{quarter}")
+    return labels
+
+
+def _first_existing_column(frame, candidates):
+    normalized_columns = {str(column).strip().lower(): column for column in frame.columns}
+    for candidate in candidates:
+        column = normalized_columns.get(candidate.lower())
+        if column is not None:
+            return column
+    return None
+
+
+def _load_existing_nasdaq100_valuation_history():
+    if not os.path.exists(US_MARKET_VALUATION_FILE):
+        return pd.DataFrame(columns=["Quarter", "Nasdaq-100 P/E", "Market Score"])
+    try:
+        raw = pd.read_csv(US_MARKET_VALUATION_FILE)
+    except Exception:
+        return pd.DataFrame(columns=["Quarter", "Nasdaq-100 P/E", "Market Score"])
+
+    quarter_col = _first_existing_column(raw, ["Quarter", "Date", "Period"])
+    pe_col = _first_existing_column(raw, ["Nasdaq-100 P/E", "Nasdaq 100 P/E", "NDX P/E", "P/E", "PE", "pe"])
+    score_col = _first_existing_column(raw, ["Market Score", "Score", "market_score"])
+    if quarter_col is None:
+        return pd.DataFrame(columns=["Quarter", "Nasdaq-100 P/E", "Market Score"])
+
+    frame = pd.DataFrame({"Quarter": raw[quarter_col].map(_normalize_quarter_label)})
+    frame["Nasdaq-100 P/E"] = pd.to_numeric(raw[pe_col], errors="coerce") if pe_col is not None else np.nan
+    frame["Market Score"] = pd.to_numeric(raw[score_col], errors="coerce") if score_col is not None else np.nan
+    frame = frame.dropna(subset=["Quarter"]).drop_duplicates(subset=["Quarter"], keep="last")
+    frame["_sort"] = frame["Quarter"].map(_quarter_sort_key)
+    return frame.sort_values("_sort").drop(columns="_sort")
+
+
+def _quarterly_return_from_ndx():
+    track_api_call("yfinance_ndx_quarterly_return")
+    ndx = yf.download("^NDX", start="2007-12-01", progress=False, auto_adjust=False)
+    if ndx is None or ndx.empty:
+        raise ValueError("No ^NDX price data returned.")
+    close = ndx["Close"]
+    if isinstance(close, pd.DataFrame):
+        close = close.iloc[:, 0]
+    close = pd.to_numeric(close, errors="coerce").dropna()
+    if close.empty:
+        raise ValueError("No usable ^NDX close prices returned.")
+    try:
+        quarterly_return = close.resample("Q").last().pct_change() * 100
+    except ValueError as exc:
+        if "Q" not in str(exc):
+            raise
+        quarterly_return = close.resample("QE").last().pct_change() * 100
+    frame = quarterly_return.dropna().reset_index()
+    frame.columns = ["Date", "Nasdaq-100 Quarterly Return %"]
+    frame["Quarter"] = frame["Date"].map(_quarter_label_from_date)
+    return frame[["Quarter", "Nasdaq-100 Quarterly Return %"]]
+
+
+@st.cache_data(ttl=US_MARKET_VALUATION_TTL_SECONDS)
+def get_us_market_valuation_dashboard_data():
+    track_cacheable_call()
+    valuation = _load_existing_nasdaq100_valuation_history()
+    ndx_error = None
+    try:
+        returns = _quarterly_return_from_ndx()
+    except Exception as exc:
+        ndx_error = str(exc)
+        returns = pd.DataFrame(columns=["Quarter", "Nasdaq-100 Quarterly Return %"])
+
+    latest_quarter = _current_quarter_label()
+    if not valuation.empty:
+        latest_quarter = max(latest_quarter, valuation["Quarter"].max(), key=_quarter_sort_key)
+    if not returns.empty:
+        latest_quarter = max(latest_quarter, returns["Quarter"].max(), key=_quarter_sort_key)
+
+    quarters = pd.DataFrame({"Quarter": _quarter_range("2008Q1", latest_quarter)})
+    frame = quarters.merge(valuation, on="Quarter", how="left").merge(returns, on="Quarter", how="left")
+    frame["_sort"] = frame["Quarter"].map(_quarter_sort_key)
+    frame = frame.sort_values("_sort").drop(columns="_sort")
+    frame["Earnings Yield %"] = 100 / frame["Nasdaq-100 P/E"]
+    return {
+        "data": frame,
+        "last_updated": date.today().isoformat(),
+        "ndx_error": ndx_error,
+        "valuation_source": US_MARKET_VALUATION_FILE if os.path.exists(US_MARKET_VALUATION_FILE) else None,
+    }
+
+
+def _latest_numeric(frame, column):
+    if column not in frame:
+        return None
+    values = pd.to_numeric(frame[column], errors="coerce").dropna()
+    return None if values.empty else float(values.iloc[-1])
+
+
+def _format_signed_percent_value(value):
+    return "N/A" if value is None or pd.isna(value) else f"{float(value):+.1f}%"
+
+
+def _render_us_market_value_card(label, value, color):
+    st.markdown(
+        f"""
+        <div style="background:#050608;border:1px solid #1f2937;border-radius:8px;padding:12px 14px;">
+            <div style="font-size:0.76rem;color:#9ca3af;">{html.escape(label)}</div>
+            <div style="font-size:1.35rem;font-weight:700;color:{color};">{html.escape(value)}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _us_market_valuation_chart(frame):
+    plot_frame = frame.copy()
+    plot_frame["x"] = plot_frame["Quarter"]
+    fig = make_subplots(
+        rows=2,
+        cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.08,
+        row_heights=[0.62, 0.38],
+        specs=[[{"secondary_y": True}], [{"secondary_y": False}]],
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=plot_frame["x"],
+            y=plot_frame["Nasdaq-100 P/E"],
+            name="Nasdaq-100 P/E",
+            mode="lines",
+            line=dict(color="#2dd4bf", width=2.6),
+            connectgaps=True,
+        ),
+        row=1,
+        col=1,
+        secondary_y=False,
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=plot_frame["x"],
+            y=plot_frame["Market Score"],
+            name="Market Score",
+            mode="lines",
+            line=dict(color="#f59e0b", width=2.2, dash="dash"),
+            connectgaps=True,
+        ),
+        row=1,
+        col=1,
+        secondary_y=True,
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=plot_frame["x"],
+            y=plot_frame["Nasdaq-100 Quarterly Return %"],
+            name="Nasdaq-100 Quarterly Return",
+            mode="lines",
+            line=dict(color="#38bdf8", width=2),
+            connectgaps=False,
+        ),
+        row=1,
+        col=1,
+        secondary_y=True,
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=plot_frame["x"],
+            y=plot_frame["Nasdaq-100 Quarterly Return %"],
+            name="Nasdaq-100 Quarterly Return detail",
+            mode="lines",
+            line=dict(color="#38bdf8", width=2),
+            fill="tozeroy",
+            fillcolor="rgba(56,189,248,0.12)",
+            connectgaps=False,
+            showlegend=False,
+        ),
+        row=2,
+        col=1,
+    )
+    latest_pe = _latest_numeric(plot_frame, "Nasdaq-100 P/E")
+    latest_score = _latest_numeric(plot_frame, "Market Score")
+    latest_return = _latest_numeric(plot_frame, "Nasdaq-100 Quarterly Return %")
+    annotations = []
+    if latest_pe is not None:
+        annotations.append(dict(x=1.01, y=latest_pe, xref="paper", yref="y", text=f"P/E: {latest_pe:.1f}x", showarrow=False, font=dict(color="#2dd4bf", size=12), xanchor="left"))
+    if latest_score is not None:
+        annotations.append(dict(x=1.01, y=latest_score, xref="paper", yref="y2", text=f"Score: {latest_score:.1f}", showarrow=False, font=dict(color="#f59e0b", size=12), xanchor="left"))
+    if latest_return is not None:
+        annotations.append(dict(x=1.01, y=latest_return, xref="paper", yref="y2", text=f"Quarterly Return: {latest_return:+.1f}%", showarrow=False, font=dict(color="#38bdf8", size=12), xanchor="left"))
+    fig.update_layout(
+        height=680,
+        paper_bgcolor="#050608",
+        plot_bgcolor="#050608",
+        font=dict(color="#d1d5db"),
+        margin=dict(l=60, r=180, t=50, b=55),
+        title=dict(text="US Market Valuation Dashboard", font=dict(size=22, color="#f9fafb")),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+        hovermode="x unified",
+        annotations=annotations,
+    )
+    fig.update_xaxes(showgrid=False, zeroline=False, tickangle=0, nticks=18, color="#9ca3af")
+    fig.update_yaxes(title_text="P/E", gridcolor="rgba(148,163,184,0.14)", zeroline=False, color="#9ca3af", row=1, col=1, secondary_y=False)
+    fig.update_yaxes(title_text="Score", gridcolor="rgba(148,163,184,0.08)", zeroline=False, color="#9ca3af", row=1, col=1, secondary_y=True)
+    fig.update_yaxes(title_text="Quarterly Return %", gridcolor="rgba(148,163,184,0.14)", zeroline=True, zerolinecolor="rgba(255,255,255,0.25)", color="#9ca3af", row=2, col=1)
+    return fig
+
+
+def render_us_market_valuation_dashboard():
+    st.markdown("### US Market Valuation Dashboard")
+    st.caption("Nasdaq-100 valuation and quarterly return history from 2008Q1 to the latest available quarter.")
+    dashboard = get_us_market_valuation_dashboard_data()
+    frame = dashboard["data"]
+    st.caption(f"Last updated: {dashboard['last_updated']}")
+    if dashboard["ndx_error"]:
+        st.warning(f"^NDX quarterly return data unavailable from yfinance: {dashboard['ndx_error']}")
+    if not dashboard["valuation_source"]:
+        st.warning("Nasdaq-100 P/E and Market Score history not found. Add data/us_market_valuation.csv with Quarter, Nasdaq-100 P/E, and Market Score columns to populate those series.")
+    if frame.empty or frame[["Nasdaq-100 P/E", "Market Score", "Nasdaq-100 Quarterly Return %"]].dropna(how="all").empty:
+        st.info("No US market valuation data available yet.")
+        return
+
+    pe = _latest_numeric(frame, "Nasdaq-100 P/E")
+    score = _latest_numeric(frame, "Market Score")
+    quarterly_return = _latest_numeric(frame, "Nasdaq-100 Quarterly Return %")
+    card_cols = st.columns(3)
+    with card_cols[0]:
+        _render_us_market_value_card("P/E", "N/A" if pe is None else f"{pe:.1f}x", "#2dd4bf")
+    with card_cols[1]:
+        _render_us_market_value_card("Score", "N/A" if score is None else f"{score:.1f}", "#f59e0b")
+    with card_cols[2]:
+        _render_us_market_value_card("Quarterly Return", _format_signed_percent_value(quarterly_return), "#38bdf8")
+    st.plotly_chart(_us_market_valuation_chart(frame), use_container_width=True)
+
+    with st.expander("Earnings Yield", expanded=False):
+        earnings_yield_frame = frame[["Quarter", "Earnings Yield %"]].dropna()
+        if earnings_yield_frame.empty:
+            st.info("Earnings Yield is unavailable until Nasdaq-100 P/E history is available.")
+        else:
+            ey_fig = go.Figure()
+            ey_fig.add_trace(go.Scatter(
+                x=earnings_yield_frame["Quarter"],
+                y=earnings_yield_frame["Earnings Yield %"],
+                name="Earnings Yield",
+                mode="lines",
+                line=dict(color="#a7f3d0", width=2),
+            ))
+            ey_fig.update_layout(
+                height=300,
+                paper_bgcolor="#050608",
+                plot_bgcolor="#050608",
+                font=dict(color="#d1d5db"),
+                margin=dict(l=50, r=30, t=30, b=45),
+                yaxis_title="%",
+                hovermode="x unified",
+            )
+            ey_fig.update_xaxes(showgrid=False, color="#9ca3af", nticks=16)
+            ey_fig.update_yaxes(gridcolor="rgba(148,163,184,0.14)", color="#9ca3af")
+            st.plotly_chart(ey_fig, use_container_width=True)
 
 
 @st.cache_data(ttl=1800)
@@ -5321,7 +5620,7 @@ def main():
 
     section_labels = [
         t("technical_analysis"), t("options_gex"), t("value_investing"),
-        t("news_sentiment"), t("multi_agent_research"), t("macro"), mt("tab"),
+        "US Market Valuation", t("news_sentiment"), t("multi_agent_research"), t("macro"), mt("tab"),
     ]
     selected_section = st.radio("Section", section_labels, horizontal=True, key="main_section_selector")
     section_start = perf_counter()
@@ -5331,6 +5630,8 @@ def main():
         render_options_section()
     elif selected_section == t("value_investing"):
         render_value_section()
+    elif selected_section == "US Market Valuation":
+        render_us_market_valuation_dashboard()
     elif selected_section == t("news_sentiment"):
         render_news_section()
     elif selected_section == t("multi_agent_research"):
