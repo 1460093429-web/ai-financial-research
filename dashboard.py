@@ -6435,62 +6435,295 @@ def render_watchlist_manager():
                 st.sidebar.error(message)
 
 
+@st.cache_data(show_spinner=False)
+def parse_cached_ibkr_activity_statement(raw_csv):
+    import warnings
+
+    from ibkr_statement_parser import parse_ibkr_activity_statement_csv
+
+    with warnings.catch_warnings(record=True) as caught_warnings:
+        warnings.simplefilter("always", RuntimeWarning)
+        sectioned_statement = parse_ibkr_activity_statement_csv(raw_csv)
+
+    return sectioned_statement, [str(warning_item.message) for warning_item in caught_warnings]
+
+
+def _what_if_safe_float(value):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if np.isfinite(number) else None
+
+
+def _what_if_epoch_time(value):
+    number = _what_if_safe_float(value)
+    if number is None:
+        return value
+    try:
+        return datetime.fromtimestamp(number)
+    except (OSError, OverflowError, ValueError):
+        return value
+
+
+@st.cache_data(ttl=180, show_spinner=False)
+def fetch_yahoo_what_if_price_details(symbols, regular_close_only=False):
+    from what_if_analysis import make_price_detail
+
+    details = {}
+    for symbol in sorted({normalize_ticker(symbol) for symbol in symbols or [] if symbol}):
+        track_api_call("what_if_yahoo_quote")
+        try:
+            info = yf.Ticker(symbol).info or {}
+        except Exception:
+            info = {}
+        price_fields = (
+            ("regularMarketPrice", "Yahoo Finance regularMarketPrice"),
+        ) if regular_close_only else (
+            ("postMarketPrice", "Yahoo Finance postMarketPrice"),
+            ("preMarketPrice", "Yahoo Finance preMarketPrice"),
+            ("regularMarketPrice", "Yahoo Finance regularMarketPrice"),
+        )
+        for field_name, source in price_fields:
+            price = _what_if_safe_float(info.get(field_name))
+            if price is not None:
+                details[symbol] = make_price_detail(price, source, _what_if_epoch_time(info.get("regularMarketTime")), is_fallback=False)
+                break
+    return details
+
+
+@st.cache_data(ttl=180, show_spinner=False)
+def fetch_fmp_what_if_price_details(symbols):
+    from what_if_analysis import make_price_detail
+
+    details = {}
+    try:
+        api_key = get_fmp_api_key()
+    except Exception:
+        return details
+    for symbol in sorted({normalize_ticker(symbol) for symbol in symbols or [] if symbol}):
+        track_api_call("what_if_fmp_quote")
+        try:
+            response = requests.get(
+                f"{FMP_BASE_URL}/quote",
+                params={"symbol": symbol, "apikey": api_key},
+                timeout=8,
+            )
+            response.raise_for_status()
+            payload = response.json()
+        except Exception:
+            continue
+        row = payload[0] if isinstance(payload, list) and payload and isinstance(payload[0], dict) else {}
+        price = _what_if_safe_float(row.get("price"))
+        if price is not None:
+            details[symbol] = make_price_detail(price, "FMP quote price", _what_if_epoch_time(row.get("timestamp")), is_fallback=False)
+    return details
+
+
 def render_ibkr_what_if_section():
-    from ibkr_client import IBKRReadOnlyClient
-    from what_if_analysis import build_what_if_analysis, parse_activity_statement_csv
+    from ibkr_client import IBKRReadOnlyClient, get_ibkr_debug_info
+    from ibkr_statement_parser import preview_uploaded_csv
+    from what_if_analysis import (
+        PRICE_MODE_CSV_FALLBACK,
+        PRICE_MODE_REALTIME,
+        PRICE_MODE_REGULAR_CLOSE,
+        PRICE_MODES,
+        activity_statement_frames_to_what_if_data,
+        build_what_if_analysis,
+        price_details_to_prices,
+        price_fallback_symbols as get_price_fallback_symbols,
+        resolve_current_price_details,
+        summarize_activity_statement_frames,
+    )
 
     st.header("IBKR What-if")
     st.caption("Read-only analysis. Compares actual equity with a no-trade scenario for the selected period.")
-    period_label = st.selectbox("Time range", ["1 Day", "1 Week", "1 Month"], key="ibkr_what_if_period")
+    period_label = st.selectbox("Time range", ["1 Day", "1 Week", "1 Month", "YTD", "Custom"], key="ibkr_what_if_period")
+    price_mode = st.selectbox("Price Mode", PRICE_MODES, index=0, key="ibkr_what_if_price_mode")
+    selected_start_date = None
+    selected_end_date = None
+    if period_label == "Custom":
+        default_end_date = date.today()
+        default_start_date = default_end_date - timedelta(days=7)
+        date_cols = st.columns(2)
+        selected_start_date = date_cols[0].date_input("Start Date", value=default_start_date, key="ibkr_what_if_start_date")
+        selected_end_date = date_cols[1].date_input("End Date", value=default_end_date, key="ibkr_what_if_end_date")
+
+    client = IBKRReadOnlyClient()
+
+    with st.expander("IBKR debug", expanded=True):
+        st.dataframe(
+            pd.DataFrame(
+                get_ibkr_debug_info(
+                    host=client.host,
+                    port=client.port,
+                    client_id=client.client_id,
+                )
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
 
     data = None
     connection_error = None
     try:
         with st.spinner("Reading IBKR account, positions, trades, and current prices..."):
-            data = IBKRReadOnlyClient().load_snapshot(period_label)
+            data = client.load_snapshot(
+                period_label,
+                start_date=selected_start_date,
+                end_date=selected_end_date,
+            )
     except Exception as exc:
         connection_error = str(exc)
         st.warning(f"IBKR API is not connected or unavailable. Upload an IBKR Activity Statement CSV as fallback. Detail: {connection_error}")
 
     uploaded_file = st.file_uploader("IBKR Activity Statement CSV fallback", type=["csv"], key="ibkr_activity_statement_csv")
     if uploaded_file is not None:
+        raw_csv = uploaded_file.getvalue()
         try:
-            data = parse_activity_statement_csv(uploaded_file, period_label=period_label)
+            sectioned_statement, parser_warnings = parse_cached_ibkr_activity_statement(raw_csv)
+            detected_section_names = sectioned_statement.get("detected_section_names") or []
+            recognized_section_names = sectioned_statement.get("recognized_section_names") or []
+
+            if detected_section_names:
+                st.caption("Detected section names")
+                st.code("\n".join(detected_section_names), language="text")
+            else:
+                st.warning("No CSV section names were detected in the first column.")
+
+            if not recognized_section_names:
+                st.warning("No supported IBKR Activity Statement sections were recognized. Showing the first 50 CSV lines for debugging.")
+                st.code(preview_uploaded_csv(raw_csv, lines=50), language="csv")
+
+            data = activity_statement_frames_to_what_if_data(
+                sectioned_statement,
+                period_label=period_label,
+                start_date=selected_start_date,
+                end_date=selected_end_date,
+            )
+            statement_summary = summarize_activity_statement_frames(sectioned_statement)
+            total_trades = statement_summary["total_trades_parsed"]
+            positions_count = statement_summary["positions_parsed"]
+            used_trades = len(data.get("trades") or [])
+            metric_cols = st.columns(5)
+            csv_start_date = statement_summary["csv_start_date"]
+            csv_end_date = statement_summary["csv_end_date"]
+            metric_cols[0].metric("CSV start date", str(csv_start_date) if csv_start_date else "N/A")
+            metric_cols[1].metric("CSV end date", str(csv_end_date) if csv_end_date else "N/A")
+            metric_cols[2].metric("Total trades parsed", total_trades)
+            metric_cols[3].metric("Trades used", used_trades)
+            metric_cols[4].metric("Positions parsed", positions_count)
+            period_cols = st.columns(4)
+            period_cols[0].metric("period_start", str(data.get("period_start") or "N/A"))
+            period_cols[1].metric("period_end", str(data.get("period_end") or "N/A"))
+            period_cols[2].metric("first trade date used", str(data.get("first_trade_date_used") or "N/A"))
+            period_cols[3].metric("last trade date used", str(data.get("last_trade_date_used") or "N/A"))
+            required_trade_columns = {"trade_datetime", "symbol", "side", "quantity", "price", "commission", "currency"}
+            if trades := data.get("trades"):
+                standardized_columns = set(pd.DataFrame(trades).columns)
+            else:
+                standardized_columns = set()
+            if not required_trade_columns.issubset(standardized_columns):
+                st.warning("Standardized trades are missing required columns. Showing parsed trade columns and first 10 rows.")
+                st.write("Trades columns", data.get("trades_columns") or [])
+                st.dataframe(pd.DataFrame(data.get("trades_preview") or []), use_container_width=True, hide_index=True)
+            if total_trades > 0 and used_trades == 0:
+                st.warning("Trades were parsed but none matched the selected date range. Check parsed trade dates and period bounds.")
+                st.dataframe(
+                    pd.DataFrame(
+                        [
+                            {"Field": "parsed trade min date", "Value": data.get("parsed_trade_min_date")},
+                            {"Field": "parsed trade max date", "Value": data.get("parsed_trade_max_date")},
+                            {"Field": "selected period start", "Value": data.get("period_start")},
+                            {"Field": "selected period end", "Value": data.get("period_end")},
+                        ]
+                    ),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+                st.caption("Normalized trades preview")
+                st.dataframe(pd.DataFrame(data.get("trades_preview") or []), use_container_width=True, hide_index=True)
+            for warning_message in parser_warnings:
+                st.warning(warning_message)
             st.info("Using uploaded Activity Statement CSV fallback data.")
         except Exception as exc:
             st.warning(f"Could not parse uploaded CSV: {exc}")
+            st.code(preview_uploaded_csv(raw_csv, lines=50), language="csv")
 
     if not data:
         st.info("Connect IBKR TWS/Gateway, or upload an Activity Statement CSV to run the what-if analysis.")
         return
 
-    actual_equity = data.get("actual_equity")
-    if actual_equity is None:
-        actual_equity = st.number_input("Actual Equity", value=0.0, min_value=0.0, step=100.0, key="ibkr_actual_equity_fallback")
-
     positions = data.get("positions") or []
     trades = data.get("trades") or []
-    current_prices = data.get("current_prices") or {}
+    csv_price_details = data.get("price_details") or {} if data.get("data_source") == "CSV" else {}
+    ibkr_price_details = data.get("price_details") or {} if data.get("data_source") == "IBKR" else {}
+    actual_equity = data.get("actual_equity")
+    st.caption("If NAV parsing is not accurate, manually enter the current Net Liquidation below.")
+    manual_actual_equity = st.number_input(
+        "Manual Actual Equity Override",
+        value=0.0,
+        min_value=0.0,
+        step=100.0,
+        key="ibkr_manual_actual_equity_override",
+    )
+    if manual_actual_equity > 0:
+        actual_equity = manual_actual_equity
+    elif actual_equity is None:
+        st.warning("Actual Equity was not found from NAV or positions plus cash. Enter a Manual Actual Equity Override.")
+        actual_equity = 0.0
     symbols = sorted(
         {
             str(item.get("symbol", "")).upper()
             for item in positions + trades
             if item.get("symbol")
         }
-        | {str(symbol).upper() for symbol in current_prices if symbol}
+        | {str(symbol).upper() for symbol in csv_price_details if symbol}
     )
+    yahoo_price_details = {}
+    fmp_price_details = {}
+    if symbols and price_mode != PRICE_MODE_CSV_FALLBACK:
+        with st.spinner("Refreshing current prices for all selected-period symbols..."):
+            yahoo_price_details = fetch_yahoo_what_if_price_details(
+                symbols,
+                regular_close_only=(price_mode == PRICE_MODE_REGULAR_CLOSE),
+            )
+            if price_mode == PRICE_MODE_REALTIME:
+                fmp_price_details = fetch_fmp_what_if_price_details(symbols)
+
+    resolved_price_details = resolve_current_price_details(
+        symbols,
+        price_mode=price_mode,
+        ibkr_details=ibkr_price_details if price_mode == PRICE_MODE_REALTIME else {},
+        yahoo_details=yahoo_price_details,
+        fmp_details=fmp_price_details,
+        csv_details=csv_price_details,
+    )
+    current_prices = price_details_to_prices(resolved_price_details)
     if symbols:
         price_rows = pd.DataFrame(
-            [{"Symbol": symbol, "Current Price": current_prices.get(symbol)} for symbol in symbols]
+            [
+                {
+                    "Symbol": symbol,
+                    "Current Price": current_prices.get(symbol),
+                    "price_source": (resolved_price_details.get(symbol) or {}).get("price_source"),
+                    "price_time": (resolved_price_details.get(symbol) or {}).get("price_time"),
+                    "is_fallback": bool((resolved_price_details.get(symbol) or {}).get("is_fallback")),
+                }
+                for symbol in symbols
+            ]
         )
         edited_prices = st.data_editor(
             price_rows,
             use_container_width=True,
             hide_index=True,
-            key=f"ibkr_current_prices_{period_label}",
+            key=f"ibkr_current_prices_{period_label}_{selected_start_date}_{selected_end_date}",
             column_config={
                 "Symbol": st.column_config.TextColumn("Symbol", disabled=True),
                 "Current Price": st.column_config.NumberColumn("Current Price", min_value=0.0, step=0.01, format="$%.2f"),
+                "price_source": st.column_config.TextColumn("price_source", disabled=True),
+                "price_time": st.column_config.TextColumn("price_time", disabled=True),
+                "is_fallback": st.column_config.CheckboxColumn("is_fallback", disabled=True),
             },
         )
         current_prices = {
@@ -6498,14 +6731,28 @@ def render_ibkr_what_if_section():
             for _, row in edited_prices.iterrows()
             if pd.notna(row.get("Current Price"))
         }
+        resolved_price_details = {
+            row["Symbol"]: {
+                "price": row["Current Price"],
+                "price_source": row.get("price_source"),
+                "price_time": row.get("price_time"),
+                "is_fallback": bool(row.get("is_fallback")),
+            }
+            for _, row in edited_prices.iterrows()
+            if pd.notna(row.get("Current Price"))
+        }
     else:
         st.warning("No positions, trades, or prices were available for this period.")
+
+    fallback_symbols = get_price_fallback_symbols(resolved_price_details)
+    for symbol in fallback_symbols:
+        st.warning(f"{symbol}: This symbol used CSV last price fallback. The result may be inaccurate.")
 
     missing_prices = [symbol for symbol in symbols if symbol not in current_prices]
     if missing_prices:
         st.warning(f"Missing current prices for: {', '.join(missing_prices)}. Those rows will contribute 0 until prices are provided.")
 
-    result = build_what_if_analysis(actual_equity, positions, trades, current_prices)
+    result = build_what_if_analysis(actual_equity, positions, trades, current_prices, price_details=resolved_price_details)
     metric_cols = st.columns(3)
     metric_cols[0].metric("Actual Equity", f"${result['actual_equity']:,.2f}")
     metric_cols[1].metric("No-trade Equity", f"${result['no_trade_equity']:,.2f}")
@@ -6525,6 +6772,8 @@ def render_ibkr_what_if_section():
     st.dataframe(
         rows.style.format(
             {
+                "Buy quantity": "{:,.4g}",
+                "Sell quantity": "{:,.4g}",
                 "Actual Position": "{:,.4g}",
                 "No-trade Position": "{:,.4g}",
                 "Current Price": "${:,.2f}",

@@ -1,15 +1,39 @@
 from datetime import date, datetime, timedelta
+import logging
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import pandas as pd
 import yfinance as yf
 
 
+logger = logging.getLogger(__name__)
+
 BASE_DIR = Path(__file__).resolve().parent
 SIGNALS_FILE = BASE_DIR / "signals.csv"
 HORIZON_TRADING_DAYS = 3
 NEUTRAL_RETURN_THRESHOLD = 0.01
+
+DATE_COLUMNS = [
+    "date",
+    "future_date",
+]
+
+TEXT_COLUMNS = [
+    "ticker",
+    "signal",
+    "result",
+]
+
+NUMERIC_COLUMNS = [
+    "confidence",
+    "price",
+    "horizon_days",
+    "future_price",
+    "return_pct",
+    "trend_alignment",
+    "score",
+]
 
 SIGNAL_COLUMNS = [
     "date",
@@ -28,22 +52,104 @@ SIGNAL_COLUMNS = [
 
 
 def _empty_signal_frame() -> pd.DataFrame:
-    return pd.DataFrame(columns=SIGNAL_COLUMNS)
+    return pd.DataFrame(
+        {
+            **{column: pd.Series(dtype="object") for column in DATE_COLUMNS},
+            **{column: pd.Series(dtype="string") for column in TEXT_COLUMNS},
+            **{column: pd.Series(dtype="float64") for column in NUMERIC_COLUMNS},
+        }
+    )[SIGNAL_COLUMNS]
+
+
+def _coerce_numeric(
+    values: pd.Series,
+    field: str,
+    ticker: Any = None,
+) -> pd.Series:
+    numeric = pd.to_numeric(values, errors="coerce")
+    invalid = values.notna() & numeric.isna()
+    if invalid.any():
+        if isinstance(ticker, pd.Series):
+            invalid_rows = pd.DataFrame(
+                {"ticker": ticker, "value": values}
+            ).loc[invalid]
+            for ticker_name, rows in invalid_rows.groupby("ticker", dropna=False):
+                logger.warning(
+                    "Numeric coercion dropped non-numeric value(s): ticker=%s field=%s values=%s",
+                    ticker_name,
+                    field,
+                    rows["value"].astype(str).unique().tolist(),
+                )
+        else:
+            logger.warning(
+                "Numeric coercion dropped non-numeric value(s): ticker=%s field=%s values=%s",
+                ticker or "unknown",
+                field,
+                values[invalid].astype(str).unique().tolist(),
+            )
+    return numeric
+
+
+def _normalize_signal_frame(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    for column in SIGNAL_COLUMNS:
+        if column not in df.columns:
+            df[column] = None
+
+    for column in DATE_COLUMNS:
+        df[column] = df[column].astype("object")
+    for column in TEXT_COLUMNS:
+        df[column] = df[column].astype("string")
+    for column in NUMERIC_COLUMNS:
+        df[column] = _coerce_numeric(df[column], column, df["ticker"])
+    return df[SIGNAL_COLUMNS]
 
 
 def load_signals() -> pd.DataFrame:
     if not SIGNALS_FILE.exists():
         return _empty_signal_frame()
 
-    df = pd.read_csv(SIGNALS_FILE)
-    for column in SIGNAL_COLUMNS:
-        if column not in df.columns:
-            df[column] = None
-    return df[SIGNAL_COLUMNS]
+    return _normalize_signal_frame(pd.read_csv(SIGNALS_FILE))
+
+
+def _normalize_history(history: Any, ticker: str) -> pd.DataFrame:
+    if history is None:
+        return pd.DataFrame(columns=["Close"])
+
+    if isinstance(history, dict):
+        history = history.get("historical", history)
+    frame = pd.DataFrame(history).copy()
+    if frame.empty:
+        return pd.DataFrame(columns=["Close"])
+
+    columns = {str(column).lower(): column for column in frame.columns}
+    close_column = columns.get("close")
+    if close_column is None:
+        logger.warning("Historical data missing close field: ticker=%s", ticker)
+        return pd.DataFrame(columns=["Close"])
+
+    date_column = columns.get("date")
+    if date_column is not None:
+        history_dates = pd.to_datetime(frame[date_column], errors="coerce")
+        invalid_dates = frame[date_column].notna() & history_dates.isna()
+        if invalid_dates.any():
+            logger.warning(
+                "Date coercion dropped invalid value(s): ticker=%s field=%s values=%s",
+                ticker,
+                date_column,
+                frame.loc[invalid_dates, date_column].astype(str).unique().tolist(),
+            )
+        frame.index = history_dates
+    else:
+        frame.index = pd.to_datetime(frame.index, errors="coerce")
+
+    frame["Close"] = _coerce_numeric(frame[close_column], str(close_column), ticker)
+    frame = frame[frame.index.notna()].sort_index()
+    return frame[["Close"]]
 
 
 def _latest_close(ticker: str) -> float:
-    history = yf.Ticker(ticker).history(period="5d")
+    history = _normalize_history(yf.Ticker(ticker).history(period="5d"), ticker)
     if history.empty:
         raise ValueError(f"No price data found for {ticker}")
     return float(history["Close"].dropna().iloc[-1])
@@ -53,7 +159,7 @@ def _trend_alignment(ticker: str, signal: str) -> float:
     if signal == "NEUTRAL":
         return 0.5
 
-    history = yf.Ticker(ticker).history(period="3mo")
+    history = _normalize_history(yf.Ticker(ticker).history(period="3mo"), ticker)
     closes = history["Close"].dropna()
     if len(closes) < 20:
         return 0.0
@@ -123,15 +229,20 @@ def save_signal(ticker: str, signal: str, confidence: float) -> pd.DataFrame:
     else:
         df = pd.concat([df, pd.DataFrame([row])], ignore_index=True)
 
+    df = _normalize_signal_frame(df)
     df.to_csv(SIGNALS_FILE, index=False)
     return df
 
 
 def _evaluate_signal(row: pd.Series) -> dict:
     signal_date = pd.to_datetime(row["date"]).date()
-    history = yf.Ticker(row["ticker"]).history(
-        start=signal_date.isoformat(),
-        end=(datetime.now().date() + timedelta(days=1)).isoformat(),
+    ticker = str(row["ticker"])
+    history = _normalize_history(
+        yf.Ticker(ticker).history(
+            start=signal_date.isoformat(),
+            end=(datetime.now().date() + timedelta(days=1)).isoformat(),
+        ),
+        ticker,
     )
 
     closes = history["Close"].dropna()
@@ -178,9 +289,16 @@ def backtest_signals(ticker: Optional[str] = None) -> Optional[dict]:
         try:
             updates = _evaluate_signal(row)
         except Exception:
+            logger.exception("Signal evaluation failed: ticker=%s", row.get("ticker"))
             updates = {"result": "PENDING"}
 
         for key, value in updates.items():
+            if key in NUMERIC_COLUMNS:
+                value = _coerce_numeric(
+                    pd.Series([value]),
+                    key,
+                    str(row.get("ticker") or ticker or ""),
+                ).iloc[0]
             df.at[index, key] = value
 
     ticker_mask = (
@@ -209,6 +327,7 @@ def backtest_signals(ticker: Optional[str] = None) -> Optional[dict]:
             axis=1,
         )
 
+    df = _normalize_signal_frame(df)
     df.to_csv(SIGNALS_FILE, index=False)
 
     win_rate = (
