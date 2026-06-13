@@ -26,6 +26,7 @@ from macro_data import build_macro_snapshot, fetch_indicator, fetch_macro_calend
 
 
 YFINANCE_CACHE_DIR = CACHE_DIR / "yfinance"
+CNN_FEAR_GREED_OFFICIAL_PAGE = "https://edition.cnn.com/markets/fear-and-greed"
 os.makedirs(YFINANCE_CACHE_DIR, exist_ok=True)
 yf.cache.set_cache_location(YFINANCE_CACHE_DIR)
 
@@ -1806,6 +1807,10 @@ def _score_at_or_before(history, target_date):
     return float(values.iloc[-1]["Fear & Greed"])
 
 
+def _is_cnn_fear_greed_source(fear_greed):
+    return fear_greed.get("source") in {"CNN", "CNN Fear & Greed Index"}
+
+
 def _cnn_fear_greed_from_payload(payload, source_url=None):
     current = payload.get("fear_and_greed") or payload.get("fearAndGreed") or {}
     current_value = _as_numeric_score(
@@ -1852,9 +1857,10 @@ def _cnn_fear_greed_from_payload(payload, source_url=None):
         "one_month_ago": _score_at_or_before(history, today - timedelta(days=30)),
         "one_year_ago": _score_at_or_before(history, today - timedelta(days=365)),
         "history": history,
-        "status": "Live data: CNN Fear & Greed",
-        "source": "CNN",
-        "source_caption": "Source: CNN",
+        "status": "CNN official",
+        "source": "CNN Fear & Greed Index",
+        "source_caption": "Source: CNN Fear & Greed Index",
+        "official_page": CNN_FEAR_GREED_OFFICIAL_PAGE,
         "source_url": source_url,
         "source_priority": "CNN historical" if used_historical_current else "CNN current",
         "historical_available": not history.empty,
@@ -1966,8 +1972,35 @@ def _fallback_fear_greed_index():
         "status": "Fallback proxy: yfinance",
         "source": "yfinance proxy",
         "source_caption": "Source: yfinance proxy",
+        "official_page": CNN_FEAR_GREED_OFFICIAL_PAGE,
         "source_priority": "yfinance fallback proxy",
         "historical_available": not history.empty,
+    }
+
+
+def _local_fear_greed_fallback_index():
+    today = date.today()
+    rows = [
+        {"Date": today - timedelta(days=365), "Fear & Greed": 50.0},
+        {"Date": today - timedelta(days=30), "Fear & Greed": 50.0},
+        {"Date": today - timedelta(days=7), "Fear & Greed": 50.0},
+        {"Date": today, "Fear & Greed": 50.0},
+    ]
+    history = pd.DataFrame(rows)
+    current = float(history.iloc[-1]["Fear & Greed"])
+    return {
+        "current": current,
+        "label": _fear_greed_label(current),
+        "one_week_ago": _score_at_or_before(history, today - timedelta(days=7)),
+        "one_month_ago": _score_at_or_before(history, today - timedelta(days=30)),
+        "one_year_ago": _score_at_or_before(history, today - timedelta(days=365)),
+        "history": history,
+        "status": "Local fallback / cached historical proxy",
+        "source": "local fallback / cached historical proxy",
+        "source_caption": "Source: local fallback / cached historical proxy",
+        "official_page": CNN_FEAR_GREED_OFFICIAL_PAGE,
+        "source_priority": "local fallback / cached historical proxy",
+        "historical_available": True,
     }
 
 
@@ -1977,30 +2010,20 @@ def get_fear_greed_index():
     except Exception as cnn_error:
         try:
             fallback = _fallback_fear_greed_index()
-            fallback["warning"] = "CNN unavailable; using yfinance proxy."
+            fallback["warning"] = "CNN official data unavailable; using yfinance proxy."
             fallback["debug"] = {
                 **fallback.get("debug", {}),
                 "cnn_error": str(cnn_error),
             }
             return fallback
         except Exception as fallback_error:
-            return {
-                "current": None,
-                "label": "N/A",
-                "one_week_ago": None,
-                "one_month_ago": None,
-                "one_year_ago": None,
-                "history": pd.DataFrame(columns=["Date", "Fear & Greed"]),
-                "status": "Unavailable",
-                "source": "unavailable",
-                "source_caption": "Source: unavailable",
-                "historical_available": False,
-                "warning": "Fear & Greed unavailable.",
-                "debug": {
-                    "cnn_error": str(cnn_error),
-                    "fallback_error": str(fallback_error),
-                },
+            local_fallback = _local_fear_greed_fallback_index()
+            local_fallback["warning"] = "CNN official data unavailable; using yfinance proxy."
+            local_fallback["debug"] = {
+                "cnn_error": str(cnn_error),
+                "fallback_error": str(fallback_error),
             }
+            return local_fallback
 
 
 @st.cache_data(ttl=7 * 24 * 60 * 60)
@@ -2216,7 +2239,7 @@ def _render_market_score_summary(latest_score_row, fear_greed, language):
     fear_greed_current = fear_greed.get("current")
     fear_greed_text = "N/A" if fear_greed_current is None or pd.isna(fear_greed_current) else f"{float(fear_greed_current):.0f}"
     fear_greed_label = _fear_greed_bilingual_label(fear_greed_current, language)
-    source_is_cnn = fear_greed.get("source") == "CNN"
+    source_is_cnn = _is_cnn_fear_greed_source(fear_greed)
 
     component_explanations = [
         ("Yield Curve Score", {
@@ -2401,21 +2424,29 @@ def _render_fear_greed_expander(fear_greed):
         label = fear_greed.get("label") or _fear_greed_label(current)
         status = fear_greed.get("status") or "Unavailable"
         source_caption = fear_greed.get("source_caption") or "Source: unavailable"
-        is_cnn = fear_greed.get("source") == "CNN"
+        official_page = fear_greed.get("official_page") or CNN_FEAR_GREED_OFFICIAL_PAGE
+        is_cnn = _is_cnn_fear_greed_source(fear_greed)
         source_label = "CNN" if is_cnn else "Proxy"
+        if hasattr(st, "link_button"):
+            st.link_button("Open CNN Fear & Greed Index", official_page)
+        else:
+            st.markdown(f"[Open CNN Fear & Greed Index]({official_page})")
         if current is None or pd.isna(current):
             st.markdown("**Current:** N/A")
             st.caption(f"Status: {status}")
             st.caption(source_caption)
+            st.caption(f"Official page: {official_page}")
             if fear_greed.get("warning"):
-                st.info(str(fear_greed["warning"]))
+                st.warning(str(fear_greed["warning"]))
+            st.caption("CNN Fear & Greed Index is an investor sentiment indicator. If CNN data is unavailable, this dashboard estimates a proxy using market data.")
             return
 
         st.markdown(f"**{source_label} Current:** {_format_fear_greed_value(current)} · {label}")
         st.caption(f"Status: {status}")
         st.caption(source_caption)
+        st.caption(f"Official page: {official_page}")
         if fear_greed.get("warning"):
-            st.info(str(fear_greed["warning"]))
+            st.warning(str(fear_greed["warning"]))
 
         history_values = [
             ("1 week ago", fear_greed.get("one_week_ago")),
@@ -2462,6 +2493,7 @@ def _render_fear_greed_expander(fear_greed):
             fg_fig.update_xaxes(showgrid=False, color="#9ca3af", nticks=12)
             fg_fig.update_yaxes(range=[0, 100], gridcolor="rgba(148,163,184,0.14)", color="#9ca3af")
             st.plotly_chart(fg_fig, use_container_width=True)
+        st.caption("CNN Fear & Greed Index is an investor sentiment indicator. If CNN data is unavailable, this dashboard estimates a proxy using market data.")
 
 def render_us_market_valuation_dashboard():
     st.markdown("### US Market Valuation Dashboard")
@@ -2504,7 +2536,7 @@ def render_us_market_valuation_dashboard():
         _render_us_market_value_card("Fear & Greed", fear_greed_card_value, "#c084fc")
         st.caption(fear_greed.get("source_caption") or "Source: unavailable")
         if fear_greed.get("warning"):
-            st.info(str(fear_greed["warning"]))
+            st.warning(str(fear_greed["warning"]))
     st.plotly_chart(_us_market_valuation_chart(chart_frame), use_container_width=True)
 
     latest_score_rows = frame.dropna(subset=["Final Market Score"], how="all")
@@ -2513,13 +2545,13 @@ def render_us_market_valuation_dashboard():
 
     score_components = dashboard.get("score_components")
     if score_components is not None and not score_components.empty:
-        fear_greed_is_cnn = fear_greed.get("source") == "CNN"
+        fear_greed_is_cnn = _is_cnn_fear_greed_source(fear_greed)
         fear_greed_reference_component = (
             "CNN Fear & Greed Index"
             if fear_greed_is_cnn
             else "Fear & Greed Index (yfinance proxy)"
         )
-        fear_greed_reference_status = "Live data: CNN" if fear_greed_is_cnn else "Fallback proxy: yfinance"
+        fear_greed_reference_status = "CNN official" if fear_greed_is_cnn else fear_greed.get("status", "Fallback proxy: yfinance")
         reference_row = pd.DataFrame([{
             "Component": fear_greed_reference_component,
             "Weight": "Reference only",

@@ -281,7 +281,7 @@ def _add_earnings_data(snapshot, ticker, api_key):
         logger.warning("%s: FMP earnings lookup failed: %s", ticker, exc)
 
 
-def fetch_historical_prices(ticker, start_date, end_date):
+def fetch_historical_prices(ticker, start_date, end_date, period=None):
     ticker = ticker.upper()
     try:
         data = _fmp_get(
@@ -304,7 +304,10 @@ def fetch_historical_prices(ticker, start_date, end_date):
         ), "FMP"
     except Exception as exc:
         logger.warning("%s: FMP historical price lookup failed; using yfinance fallback: %s", ticker, exc)
-        frame = yf.Ticker(ticker).history(start=str(start_date), end=str(end_date))
+        if period:
+            frame = yf.Ticker(ticker).history(period=period, interval="1d")
+        else:
+            frame = yf.Ticker(ticker).history(start=str(start_date), end=str(end_date), interval="1d")
         if frame.empty:
             raise ValueError("No historical prices returned by FMP or yfinance")
         return frame, "yfinance fallback"
