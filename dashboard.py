@@ -6435,6 +6435,108 @@ def render_watchlist_manager():
                 st.sidebar.error(message)
 
 
+def render_ibkr_what_if_section():
+    from ibkr_client import IBKRReadOnlyClient
+    from what_if_analysis import build_what_if_analysis, parse_activity_statement_csv
+
+    st.header("IBKR What-if")
+    st.caption("Read-only analysis. Compares actual equity with a no-trade scenario for the selected period.")
+    period_label = st.selectbox("Time range", ["1 Day", "1 Week", "1 Month"], key="ibkr_what_if_period")
+
+    data = None
+    connection_error = None
+    try:
+        with st.spinner("Reading IBKR account, positions, trades, and current prices..."):
+            data = IBKRReadOnlyClient().load_snapshot(period_label)
+    except Exception as exc:
+        connection_error = str(exc)
+        st.warning(f"IBKR API is not connected or unavailable. Upload an IBKR Activity Statement CSV as fallback. Detail: {connection_error}")
+
+    uploaded_file = st.file_uploader("IBKR Activity Statement CSV fallback", type=["csv"], key="ibkr_activity_statement_csv")
+    if uploaded_file is not None:
+        try:
+            data = parse_activity_statement_csv(uploaded_file, period_label=period_label)
+            st.info("Using uploaded Activity Statement CSV fallback data.")
+        except Exception as exc:
+            st.warning(f"Could not parse uploaded CSV: {exc}")
+
+    if not data:
+        st.info("Connect IBKR TWS/Gateway, or upload an Activity Statement CSV to run the what-if analysis.")
+        return
+
+    actual_equity = data.get("actual_equity")
+    if actual_equity is None:
+        actual_equity = st.number_input("Actual Equity", value=0.0, min_value=0.0, step=100.0, key="ibkr_actual_equity_fallback")
+
+    positions = data.get("positions") or []
+    trades = data.get("trades") or []
+    current_prices = data.get("current_prices") or {}
+    symbols = sorted(
+        {
+            str(item.get("symbol", "")).upper()
+            for item in positions + trades
+            if item.get("symbol")
+        }
+        | {str(symbol).upper() for symbol in current_prices if symbol}
+    )
+    if symbols:
+        price_rows = pd.DataFrame(
+            [{"Symbol": symbol, "Current Price": current_prices.get(symbol)} for symbol in symbols]
+        )
+        edited_prices = st.data_editor(
+            price_rows,
+            use_container_width=True,
+            hide_index=True,
+            key=f"ibkr_current_prices_{period_label}",
+            column_config={
+                "Symbol": st.column_config.TextColumn("Symbol", disabled=True),
+                "Current Price": st.column_config.NumberColumn("Current Price", min_value=0.0, step=0.01, format="$%.2f"),
+            },
+        )
+        current_prices = {
+            row["Symbol"]: row["Current Price"]
+            for _, row in edited_prices.iterrows()
+            if pd.notna(row.get("Current Price"))
+        }
+    else:
+        st.warning("No positions, trades, or prices were available for this period.")
+
+    missing_prices = [symbol for symbol in symbols if symbol not in current_prices]
+    if missing_prices:
+        st.warning(f"Missing current prices for: {', '.join(missing_prices)}. Those rows will contribute 0 until prices are provided.")
+
+    result = build_what_if_analysis(actual_equity, positions, trades, current_prices)
+    metric_cols = st.columns(3)
+    metric_cols[0].metric("Actual Equity", f"${result['actual_equity']:,.2f}")
+    metric_cols[1].metric("No-trade Equity", f"${result['no_trade_equity']:,.2f}")
+    metric_cols[2].metric("Trading Value Added", f"${result['trading_value_added']:,.2f}")
+
+    if result["trading_value_added"] > 0:
+        st.success("Trading Value Added > 0: this period's trading increased returns versus doing nothing.")
+    elif result["trading_value_added"] < 0:
+        st.warning("Trading Value Added < 0: doing nothing during this period would have been better.")
+    else:
+        st.info("Trading Value Added = 0: no measured value was added or lost during this period.")
+
+    rows = pd.DataFrame(result["rows"])
+    if rows.empty:
+        st.info("No symbol-level rows to display.")
+        return
+    st.dataframe(
+        rows.style.format(
+            {
+                "Actual Position": "{:,.4g}",
+                "No-trade Position": "{:,.4g}",
+                "Current Price": "${:,.2f}",
+                "Trading Value Added": "${:,.2f}",
+            },
+            na_rep="N/A",
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+
 def main():
     st.set_page_config(page_title="Equity Research Terminal", layout="wide")
     reset_debug_state()
@@ -6474,7 +6576,8 @@ def main():
 
     section_labels = [
         t("technical_analysis"), t("options_gex"), t("value_investing"),
-        "US Market Valuation", t("news_sentiment"), t("multi_agent_research"), t("macro"), mt("tab"),
+        "US Market Valuation", t("news_sentiment"), t("multi_agent_research"), t("macro"),
+        "IBKR What-if", mt("tab"),
     ]
     selected_section = st.radio("Section", section_labels, horizontal=True, key="main_section_selector")
     section_start = perf_counter()
@@ -6492,6 +6595,8 @@ def main():
         render_multi_agent_section(st.session_state.get("language", "English"), load_watchlist())
     elif selected_section == t("macro"):
         render_macro_section()
+    elif selected_section == "IBKR What-if":
+        render_ibkr_what_if_section()
     else:
         render_mu_valuation_model(snapshots)
     track_section_time(selected_section, perf_counter() - section_start)
