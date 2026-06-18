@@ -1,5 +1,6 @@
 import yfinance as yf
 import pandas as pd
+from option_walls import compute_option_walls
 
 def analyze_options_levels(ticker):
     stock = yf.Ticker(ticker)
@@ -32,14 +33,14 @@ def analyze_options_levels(ticker):
         
         max_pain = min(pain, key=pain.get)
         
-        # Key levels
-        # Call Wall = highest OI call above current price
-        calls_above = calls[calls["strike"] > current_price]
-        call_wall = calls_above.loc[calls_above["openInterest"].idxmax(), "strike"] if len(calls_above) > 0 else None
-        
-        # Put Wall = highest OI put below current price
-        puts_below = puts[puts["strike"] < current_price]
-        put_wall = puts_below.loc[puts_below["openInterest"].idxmax(), "strike"] if len(puts_below) > 0 else None
+        # Key levels: walls are the highest-OI strikes for this expiration.
+        option_chain = pd.concat([
+            calls.assign(option_type="call", expiry=exp_date),
+            puts.assign(option_type="put", expiry=exp_date),
+        ], ignore_index=True)
+        option_walls = compute_option_walls(option_chain, exp_date, spot_price=current_price)
+        call_wall = option_walls["call_wall"]["strike"]
+        put_wall = option_walls["put_wall"]["strike"]
         
         # Put/Call ratio
         pc_ratio = puts["openInterest"].sum() / calls["openInterest"].sum()

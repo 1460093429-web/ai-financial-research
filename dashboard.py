@@ -23,6 +23,7 @@ import yfinance as yf
 from config import CACHE_DIR, get_fmp_api_key, get_openai_client
 from financials import fetch_company_news, fetch_general_news, fetch_historical_prices, get_company_snapshot as get_fmp_company_snapshot
 from macro_data import build_macro_snapshot, fetch_indicator, fetch_macro_calendar, fetch_market_series, fetch_treasury_rates
+from option_walls import compute_option_walls
 
 
 YFINANCE_CACHE_DIR = CACHE_DIR / "yfinance"
@@ -864,7 +865,114 @@ def _normalize_option_chain_frame(frame):
             normalized[field] = pd.to_numeric(normalized[field], errors="coerce")
     if "openInterest" in normalized.columns:
         normalized["openInterest"] = normalized["openInterest"].fillna(0)
+    if "volume" in normalized.columns:
+        normalized["volume"] = normalized["volume"].fillna(0)
     return normalized
+
+
+def _combined_option_chain(calls, puts, expiry):
+    frames = []
+    for option_type, frame in (("call", calls), ("put", puts)):
+        if frame is None or frame.empty:
+            continue
+        normalized = frame.copy()
+        normalized["option_type"] = option_type
+        normalized["expiry"] = expiry
+        frames.append(normalized)
+    if not frames:
+        return pd.DataFrame()
+    return pd.concat(frames, ignore_index=True)
+
+
+def _build_gamma_points_for_side(frame, option_type, underlying_price, time_to_expiry):
+    required = {"strike", "openInterest", "impliedVolatility"}
+    if frame is None or frame.empty or underlying_price is None or underlying_price <= 0 or not required.issubset(frame.columns):
+        return pd.DataFrame()
+    rows = []
+    direction = 1 if option_type == "call" else -1
+    for _, row in frame.iterrows():
+        try:
+            strike = float(row.get("strike"))
+            open_interest = 0 if pd.isna(row.get("openInterest")) else float(row.get("openInterest"))
+            volume = 0 if pd.isna(row.get("volume", 0)) else float(row.get("volume", 0))
+            implied_volatility = float(row.get("impliedVolatility"))
+            gamma = row.get("gamma")
+        except (TypeError, ValueError):
+            continue
+        if (
+            not np.isfinite(strike)
+            or strike <= 0
+            or not np.isfinite(open_interest)
+            or open_interest <= 0
+            or not np.isfinite(implied_volatility)
+            or implied_volatility <= 0
+        ):
+            continue
+        try:
+            gamma = float(gamma)
+        except (TypeError, ValueError):
+            gamma = np.nan
+        if not np.isfinite(gamma) or gamma <= 0:
+            try:
+                gamma = black_scholes_gamma(underlying_price, strike, time_to_expiry, 0.05, implied_volatility)
+            except Exception:
+                continue
+        if not np.isfinite(gamma) or gamma <= 0:
+            continue
+        gex = direction * gamma * open_interest * 100 * underlying_price**2 / 1_000_000
+        if not np.isfinite(gex):
+            continue
+        rows.append({
+            "option_type": option_type,
+            "strike": strike,
+            "openInterest": open_interest,
+            "volume": volume if np.isfinite(volume) else 0,
+            "impliedVolatility": implied_volatility,
+            "gamma": gamma,
+            "gex": gex,
+            "abs_gex": abs(gex),
+            "distance_pct": abs(strike - underlying_price) / underlying_price,
+        })
+    return pd.DataFrame(rows)
+
+
+def calculate_strongest_gamma_points(calls, puts, underlying_price, expiry):
+    if underlying_price is None or pd.isna(underlying_price) or float(underlying_price) <= 0:
+        return {"top_gamma_points": pd.DataFrame(), "gex_by_strike": pd.DataFrame()}
+    try:
+        time_to_expiry = max((datetime.strptime(expiry, "%Y-%m-%d") - datetime.now()).days / 365, 0.001)
+    except Exception:
+        time_to_expiry = 0.001
+    call_points = _build_gamma_points_for_side(calls, "call", float(underlying_price), time_to_expiry)
+    put_points = _build_gamma_points_for_side(puts, "put", float(underlying_price), time_to_expiry)
+    detail = pd.concat([call_points, put_points], ignore_index=True)
+    if detail.empty:
+        return {"top_gamma_points": pd.DataFrame(), "gex_by_strike": pd.DataFrame()}
+    top_gamma_points = detail.nlargest(10, "abs_gex").reset_index(drop=True)
+    gex_by_type = detail.pivot_table(
+        index="strike",
+        columns="option_type",
+        values="gex",
+        aggfunc="sum",
+        fill_value=0,
+    ).reset_index()
+    if "call" not in gex_by_type.columns:
+        gex_by_type["call"] = 0.0
+    if "put" not in gex_by_type.columns:
+        gex_by_type["put"] = 0.0
+    totals = detail.groupby("strike", as_index=False).agg(
+        total_oi=("openInterest", "sum"),
+        total_volume=("volume", "sum"),
+    )
+    gex_by_strike = gex_by_type.rename(columns={"call": "call_gex", "put": "put_gex"}).merge(totals, on="strike", how="left")
+    gex_by_strike["net_gex"] = gex_by_strike["call_gex"] + gex_by_strike["put_gex"]
+    gex_by_strike["abs_net_gex"] = gex_by_strike["net_gex"].abs()
+    gex_by_strike["distance_pct"] = (gex_by_strike["strike"] - float(underlying_price)).abs() / float(underlying_price)
+    gex_by_strike = gex_by_strike[[
+        "strike", "call_gex", "put_gex", "net_gex", "abs_net_gex",
+        "total_oi", "total_volume", "distance_pct",
+    ]].sort_values("abs_net_gex", ascending=False).reset_index(drop=True)
+    return {"top_gamma_points": top_gamma_points, "gex_by_strike": gex_by_strike}
 
 
 def _option_missing_reasons(calls, puts, gex_by_strike, current_price_available=True, chain_available=True):
@@ -928,10 +1036,13 @@ def get_options_data(ticker, expiry=None):
     puts = _normalize_option_chain_frame(chain.puts)
     total_call_oi = float(_option_open_interest(calls).sum())
     total_put_oi = float(_option_open_interest(puts).sum())
-    calls_above = calls[(calls["strike"] > current_price) & (calls["openInterest"] > 0)] if {"strike", "openInterest"}.issubset(calls.columns) else pd.DataFrame()
-    puts_below = puts[(puts["strike"] < current_price) & (puts["openInterest"] > 0)] if {"strike", "openInterest"}.issubset(puts.columns) else pd.DataFrame()
-    call_wall = calls_above.loc[calls_above["openInterest"].idxmax(), "strike"] if not calls_above.empty else None
-    put_wall = puts_below.loc[puts_below["openInterest"].idxmax(), "strike"] if not puts_below.empty else None
+    option_walls = compute_option_walls(
+        _combined_option_chain(calls, puts, exp_date),
+        exp_date,
+        spot_price=current_price,
+    )
+    call_wall = option_walls["call_wall"]["strike"]
+    put_wall = option_walls["put_wall"]["strike"]
     call_strikes = calls["strike"].dropna().tolist() if "strike" in calls else []
     put_strikes = puts["strike"].dropna().tolist() if "strike" in puts else []
     strikes = sorted(set(call_strikes + put_strikes))
@@ -963,6 +1074,9 @@ def get_options_data(ticker, expiry=None):
         "pc_ratio": None if total_call_oi == 0 else total_put_oi / total_call_oi,
         "call_wall": call_wall,
         "put_wall": put_wall,
+        "call_wall_oi": option_walls["call_wall"]["open_interest"],
+        "put_wall_oi": option_walls["put_wall"]["open_interest"],
+        "option_walls": option_walls,
         "max_pain": min(pain, key=pain.get) if pain else None,
         "net_gex": sum(total_gex.values()) if total_gex else None,
         "calls_near_gex": sum(value for strike, value in total_gex.items() if value > 0 and current_price < strike < current_price * 1.1),
@@ -1013,6 +1127,8 @@ def _options_metric_payload(ticker, opt):
         "net_gex": opt.get("net_gex"),
         "call_wall": opt.get("call_wall"),
         "put_wall": opt.get("put_wall"),
+        "call_wall_open_interest": opt.get("call_wall_oi"),
+        "put_wall_open_interest": opt.get("put_wall_oi"),
         "current_expiry_date": opt.get("exp_date"),
     }
 
@@ -1050,6 +1166,7 @@ def build_options_ai_prompt(ticker, metrics, language):
     return f"""
 You are an options market structure analyst. Use only the supplied metrics. Do not invent or infer missing values.
 If a metric is missing, say it is unavailable. Do not provide financial advice.
+以下 Put Wall / Call Wall 是程序已经计算好的结果，请直接使用，不要重新推断或修改。
 {language_instruction}
 
 Ticker: {ticker}
@@ -1249,6 +1366,88 @@ def render_gex_chart(ticker, gex_by_strike, current_price, exp_date):
     st.plotly_chart(fig, use_container_width=True, key=f"{ticker}_{exp_date}_gex")
 
 
+def _format_gamma_points_table(frame, columns):
+    if frame is None or frame.empty:
+        return pd.DataFrame(columns=columns)
+    formatted = frame.loc[:, [column for column in columns if column in frame.columns]].copy()
+    for column in ("strike", "openInterest", "volume", "total_oi", "total_volume"):
+        if column in formatted.columns:
+            decimals = 2 if column == "strike" else 0
+            formatted[column] = formatted[column].map(lambda value: "N/A" if pd.isna(value) else f"{float(value):,.{decimals}f}")
+    for column in ("impliedVolatility", "distance_pct"):
+        if column in formatted.columns:
+            formatted[column] = formatted[column].map(format_percent)
+    if "gamma" in formatted.columns:
+        formatted["gamma"] = formatted["gamma"].map(lambda value: "N/A" if pd.isna(value) else f"{float(value):,.6f}")
+    for column in ("gex", "abs_gex", "call_gex", "put_gex", "net_gex", "abs_net_gex"):
+        if column in formatted.columns:
+            formatted[column] = formatted[column].map(lambda value: "N/A" if pd.isna(value) else f"{float(value):,.2f}")
+    return formatted
+
+
+def render_strongest_gamma_points(opt):
+    st.markdown("#### 当日期权最强点 / Today's Strongest Gamma Points")
+    try:
+        gamma_points = calculate_strongest_gamma_points(
+            opt.get("calls"),
+            opt.get("puts"),
+            opt.get("current_price"),
+            opt.get("exp_date"),
+        )
+        top_gamma_points = gamma_points["top_gamma_points"]
+        gex_by_strike = gamma_points["gex_by_strike"]
+    except Exception:
+        top_gamma_points = pd.DataFrame()
+        gex_by_strike = pd.DataFrame()
+    if top_gamma_points.empty or gex_by_strike.empty:
+        st.warning("当前到期日缺少足够期权数据，无法计算最强 Gamma 点。")
+        return
+
+    strongest = gex_by_strike.iloc[0]
+    current_price = float(opt.get("current_price"))
+    nearby = gex_by_strike[gex_by_strike["distance_pct"] <= 0.03]
+    nearest_strongest = nearby.iloc[0] if not nearby.empty else None
+    below = gex_by_strike[gex_by_strike["strike"] < current_price].sort_values("strike", ascending=False)
+    above = gex_by_strike[gex_by_strike["strike"] > current_price].sort_values("strike")
+    magnet_levels = []
+    if not below.empty:
+        magnet_levels.append(float(below.iloc[0]["strike"]))
+    if not above.empty:
+        magnet_levels.append(float(above.iloc[0]["strike"]))
+    magnet_text = " / ".join(format_money(level, 2) for level in magnet_levels) if magnet_levels else "N/A"
+
+    render_metric_row([
+        ("最强 Gamma Strike", format_money(strongest["strike"], 2)),
+        ("最近强 Gamma Strike", format_money(nearest_strongest["strike"], 2) if nearest_strongest is not None else "N/A"),
+        ("Gamma 磁铁区间", magnet_text),
+    ])
+
+    explanations = []
+    if float(strongest["distance_pct"]) <= 0.03:
+        explanations.append("当前价格接近强 Gamma 区，股价可能被该执行价吸引或压制。")
+    net_gex = opt.get("net_gex")
+    if net_gex is not None and not pd.isna(net_gex):
+        if float(net_gex) >= 0:
+            explanations.append("正 GEX 环境下，强 Gamma 位更容易形成钉住/回拉。")
+        else:
+            explanations.append("负 GEX 环境下，跌破或突破强 Gamma 位后波动可能被放大。")
+    for explanation in explanations:
+        st.info(explanation)
+
+    single_columns = [
+        "option_type", "strike", "openInterest", "volume", "impliedVolatility",
+        "gamma", "gex", "abs_gex", "distance_pct",
+    ]
+    strike_columns = [
+        "strike", "call_gex", "put_gex", "net_gex", "abs_net_gex",
+        "total_oi", "total_volume", "distance_pct",
+    ]
+    st.markdown("##### 当日最强单一期权 Gamma")
+    st.dataframe(_format_gamma_points_table(top_gamma_points, single_columns), use_container_width=True, hide_index=True)
+    st.markdown("##### 当日最强 Strike Gamma")
+    st.dataframe(_format_gamma_points_table(gex_by_strike.head(10), strike_columns), use_container_width=True, hide_index=True)
+
+
 def render_technical_section():
     st.caption(t("technical_caption"))
     for ticker in load_watchlist():
@@ -1305,6 +1504,15 @@ def render_options_section():
                     f"call OI: {opt['total_call_oi']:,.0f} | put OI: {opt['total_put_oi']:,.0f} | "
                     f"expiry: {opt['exp_date']} | source: {opt.get('source', 'N/A')}"
                 )
+                with st.expander("Options wall debug", expanded=False):
+                    st.json({
+                        "selected_expiry": selected_expiry,
+                        "put_wall_strike": opt.get("put_wall"),
+                        "put_wall_oi": opt.get("put_wall_oi"),
+                        "call_wall_strike": opt.get("call_wall"),
+                        "call_wall_oi": opt.get("call_wall_oi"),
+                        "max_pain": opt.get("max_pain"),
+                    })
                 render_metric_row([
                     (t("price"), format_money(opt["current_price"], 2)),
                     (t("put_call_ratio"), format_ratio(opt["pc_ratio"])),
@@ -1327,6 +1535,7 @@ def render_options_section():
                     if reason == "option_open_interest_missing":
                         continue
                     st.warning(t(reason))
+                render_strongest_gamma_points(opt)
                 st.markdown(f"#### {t('options_ai_summary')}")
                 st.caption(t("options_ai_summary_disclaimer"))
                 summary_language = st.session_state.get("language", "English")
@@ -4075,6 +4284,8 @@ def get_options_summary(ticker):
         "net_gex": opt["net_gex"],
         "call_wall": opt["call_wall"],
         "put_wall": opt["put_wall"],
+        "call_wall_open_interest": opt.get("call_wall_oi"),
+        "put_wall_open_interest": opt.get("put_wall_oi"),
         "missing_reasons": opt.get("missing_reasons", []),
         "source": opt.get("source"),
     }
