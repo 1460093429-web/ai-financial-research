@@ -21,24 +21,6 @@ import streamlit as st
 import yfinance as yf
 
 from config import CACHE_DIR, get_fmp_api_key, get_openai_client
-from etf_flow_providers import (
-    ETF_QUOTE_TTL_SECONDS,
-    FLOW_API_TTL_SECONDS,
-    FMP_INFO_TTL_SECONDS,
-    fetch_latest_semiconductor_etf_flows,
-    get_fmp_etf_price_history,
-    get_fmp_semiconductor_etf_dataset,
-    load_local_semiconductor_flow_csv,
-)
-from etf_flows import (
-    SEMICONDUCTOR_ETFS,
-    aggregate_flows,
-    calculate_flow_aum_pct,
-    calculate_rolling_flow,
-    merge_flow_with_fmp_info,
-    parse_etf_flow_csv,
-    summarize_latest_flows,
-)
 from financials import fetch_company_news, fetch_general_news, fetch_historical_prices, get_company_snapshot as get_fmp_company_snapshot
 from macro_data import build_macro_snapshot, fetch_indicator, fetch_macro_calendar, fetch_market_series, fetch_treasury_rates
 from option_walls import compute_option_walls
@@ -7047,246 +7029,6 @@ def render_ibkr_what_if_section():
     )
 
 
-def _etf_money(value):
-    if value is None or pd.isna(value):
-        return "N/A"
-    value = float(value)
-    sign = "-" if value < 0 else ""
-    value = abs(value)
-    if value >= 1_000_000_000:
-        return f"{sign}${value / 1_000_000_000:,.2f}B"
-    if value >= 1_000_000:
-        return f"{sign}${value / 1_000_000:,.1f}M"
-    return f"{sign}${value:,.0f}"
-
-
-@st.cache_data(ttl=FLOW_API_TTL_SECONDS, show_spinner=False)
-def get_cached_semiconductor_etf_flows(tickers, provider):
-    return fetch_latest_semiconductor_etf_flows(list(tickers), provider=provider)
-
-
-@st.cache_data(ttl=FMP_INFO_TTL_SECONDS, show_spinner=False)
-def get_cached_fmp_etf_dataset(tickers):
-    return get_fmp_semiconductor_etf_dataset(list(tickers))
-
-
-@st.cache_data(ttl=ETF_QUOTE_TTL_SECONDS, show_spinner=False)
-def get_cached_etf_price_history(symbol, start_date, end_date, provider):
-    if provider == "FMP":
-        return get_fmp_etf_price_history(symbol, start_date, end_date)
-    if provider == "yfinance fallback":
-        try:
-            history = yf.Ticker(symbol).history(start=start_date, end=end_date)
-            if history.empty:
-                return pd.DataFrame(columns=["date", "close"])
-            return history.reset_index().rename(columns={"Date": "date", "Close": "close"})[["date", "close"]]
-        except Exception:
-            return pd.DataFrame(columns=["date", "close"])
-    return pd.DataFrame(columns=["date", "close"])
-
-
-def _filter_etf_time_range(df, selected_range, custom_start=None, custom_end=None):
-    if df is None or df.empty:
-        return df
-    frame = df.copy()
-    frame["date"] = pd.to_datetime(frame["date"])
-    end = frame["date"].max()
-    if selected_range == "Custom" and custom_start and custom_end:
-        start = pd.to_datetime(custom_start)
-        end = pd.to_datetime(custom_end)
-    elif selected_range == "1M":
-        start = end - pd.DateOffset(months=1)
-    elif selected_range == "3M":
-        start = end - pd.DateOffset(months=3)
-    elif selected_range == "6M":
-        start = end - pd.DateOffset(months=6)
-    elif selected_range == "YTD":
-        start = pd.Timestamp(year=end.year, month=1, day=1)
-    elif selected_range == "1Y":
-        start = end - pd.DateOffset(years=1)
-    elif selected_range == "3Y":
-        start = end - pd.DateOffset(years=3)
-    else:
-        start = frame["date"].min()
-    return frame[(frame["date"] >= start) & (frame["date"] <= end)].copy()
-
-
-def _etf_flow_bar_chart(df, title, y_column="flow"):
-    fig = go.Figure()
-    if df is not None and not df.empty:
-        for ticker, ticker_df in df.groupby("ticker"):
-            fig.add_trace(go.Bar(x=ticker_df["date"], y=ticker_df[y_column], name=ticker))
-    fig.update_layout(title=title, barmode="relative", height=380, margin=dict(l=10, r=10, t=55, b=20))
-    return fig
-
-
-def _etf_line_chart(df, title, y_column="flow"):
-    fig = go.Figure()
-    if df is not None and not df.empty:
-        for ticker, ticker_df in df.groupby("ticker"):
-            fig.add_trace(go.Scatter(x=ticker_df["date"], y=ticker_df[y_column], mode="lines", name=ticker))
-    fig.update_layout(title=title, height=380, margin=dict(l=10, r=10, t=55, b=20))
-    return fig
-
-
-def _holding_weight_column(holdings):
-    for column in ("weightPercentage", "weight", "percentage", "marketValuePercentage"):
-        if column in holdings.columns:
-            return column
-    return None
-
-
-def render_semiconductor_etf_flows_section():
-    st.header("Semiconductor ETF Flows")
-    st.caption("半导体 ETF 资金流")
-    st.info(
-        "ETF fund flows 表示 ETF 的资金净流入/流出。半导体 ETF 大幅流入通常说明市场风险偏好偏向 AI、芯片、成长板块，"
-        "但 ETF flows 不能单独证明股价继续上涨。流入可能发生在阶段性高位，需要结合价格、成交量、期权 GEX、PCR、IV、宏观利率一起判断。"
-        "FMP 主要用于 ETF 信息、持仓、AUM 和价格；真实 fund flow 优先使用可用的 fund flow API 或上传 CSV。"
-        "latest available date 不一定等于今天，取决于数据源更新时间。不构成投资建议。"
-    )
-
-    controls = st.columns([1.2, 1.2, 1.4, 1.2])
-    time_range = controls[0].selectbox("Time Range", ["1M", "3M", "6M", "YTD", "1Y", "3Y", "Max", "Custom"], index=2)
-    frequency_label = controls[1].selectbox("Frequency", ["Daily", "Weekly", "Monthly"], index=1)
-    provider_label = controls[2].selectbox("Data Provider", ["Auto", "FMP if available", "Massive", "Uploaded CSV", "Local CSV"], index=0)
-    price_provider = controls[3].selectbox("Price Overlay", ["FMP", "yfinance fallback", "None"], index=0)
-    custom_start = custom_end = None
-    if time_range == "Custom":
-        date_cols = st.columns(2)
-        custom_start = date_cols[0].date_input("Custom start", value=date.today() - timedelta(days=180))
-        custom_end = date_cols[1].date_input("Custom end", value=date.today())
-    selected_tickers = st.multiselect("ETF tickers", SEMICONDUCTOR_ETFS, default=SEMICONDUCTOR_ETFS)
-    unit = st.selectbox("Uploaded CSV unit", ["USD", "million USD", "billion USD"], index=0)
-    uploaded_csv = st.file_uploader("Upload CSV fallback", type=["csv"])
-    if st.button("Refresh latest ETF flows"):
-        get_cached_semiconductor_etf_flows.clear()
-        get_cached_fmp_etf_dataset.clear()
-        get_cached_etf_price_history.clear()
-        st.rerun()
-
-    if not selected_tickers:
-        st.warning("Select at least one semiconductor ETF ticker.")
-        return
-
-    provider_key = provider_label.lower()
-    if provider_label == "Uploaded CSV":
-        if uploaded_csv is None:
-            st.warning("Uploaded CSV fallback is not realtime data. It depends on the file update time from ETF.com, ETFcentral, VettaFi, FactSet, Goldman, or another manual source.")
-            result = {"flows": pd.DataFrame(), "data_source": "Uploaded CSV", "provider_status": "Waiting for uploaded CSV.", "last_fetch_time": datetime.utcnow().isoformat(timespec="seconds"), "tickers_loaded": [], "tickers_missing": selected_tickers}
-        else:
-            try:
-                flows = parse_etf_flow_csv(uploaded_csv, unit=unit)
-                flows = flows[flows["ticker"].isin(selected_tickers)]
-                result = {"flows": flows, "data_source": "Uploaded CSV", "provider_status": "Uploaded CSV parsed.", "last_fetch_time": datetime.utcnow().isoformat(timespec="seconds")}
-            except Exception as exc:
-                st.warning(str(exc))
-                preview = pd.read_csv(uploaded_csv).head(20) if uploaded_csv is not None else pd.DataFrame()
-                if not preview.empty:
-                    st.dataframe(preview, use_container_width=True)
-                return
-    elif provider_label == "Local CSV":
-        result = load_local_semiconductor_flow_csv()
-    else:
-        with st.spinner("Fetching latest ETF fund flows..."):
-            result = get_cached_semiconductor_etf_flows(tuple(selected_tickers), provider_key)
-
-    flow_df = result.get("flows", pd.DataFrame())
-    if flow_df is None or flow_df.empty:
-        st.warning(result.get("provider_status", "No ETF flow data available."))
-        st.warning("Local CSV fallback will read data/semiconductor_etf_flows.csv if that file exists. ETF.com is supported only as a manually exported CSV source.")
-        return
-
-    fmp_dataset = get_cached_fmp_etf_dataset(tuple(selected_tickers))
-    info_df = fmp_dataset.get("info", pd.DataFrame())
-    holdings_df = fmp_dataset.get("holdings", pd.DataFrame())
-    flow_df = merge_flow_with_fmp_info(flow_df, info_df)
-    filtered = _filter_etf_time_range(flow_df, time_range, custom_start, custom_end)
-    freq_map = {"Daily": "D", "Weekly": "W", "Monthly": "M"}
-    display_df = filtered.copy() if frequency_label == "Daily" else aggregate_flows(filtered[["date", "ticker", "flow"]], freq_map[frequency_label])
-    summary = summarize_latest_flows(flow_df, info_df)
-    flow_aum = calculate_flow_aum_pct(display_df, info_df)
-    rolling4 = calculate_rolling_flow(aggregate_flows(filtered[["date", "ticker", "flow"]], "W"), 4)
-    rolling13 = calculate_rolling_flow(aggregate_flows(filtered[["date", "ticker", "flow"]], "W"), 13)
-
-    status_cols = st.columns(6)
-    status_cols[0].metric("latest_available_date", str(summary.get("latest_available_date") or result.get("latest_available_date") or "N/A"))
-    status_cols[1].metric("last_fetch_time", str(result.get("last_fetch_time", "N/A")))
-    status_cols[2].metric("data_source", result.get("data_source", "N/A"))
-    status_cols[3].metric("tickers_loaded", ", ".join(result.get("tickers_loaded") or summary.get("tickers_loaded") or []))
-    status_cols[4].metric("tickers_missing", ", ".join(result.get("tickers_missing") or summary.get("tickers_missing") or []))
-    status_cols[5].metric("provider_status", result.get("provider_status", "N/A")[:80])
-
-    card_cols = st.columns(5)
-    card_cols[0].metric("Latest Aggregate Flow", _etf_money(summary.get("latest_aggregate_flow")))
-    card_cols[1].metric("Latest Week Aggregate Flow", _etf_money(summary.get("latest_week_aggregate_flow")))
-    card_cols[2].metric("Latest Month Aggregate Flow", _etf_money(summary.get("latest_month_aggregate_flow")))
-    card_cols[3].metric("YTD Aggregate Flow", _etf_money(summary.get("ytd_aggregate_flow")))
-    card_cols[4].metric("Aggregate ETF AUM from FMP", _etf_money(summary.get("aggregate_aum")))
-    card_cols = st.columns(5)
-    card_cols[0].metric("Top Inflow ETF", summary.get("top_inflow_etf") or "N/A")
-    card_cols[1].metric("Top Outflow ETF", summary.get("top_outflow_etf") or "N/A")
-    card_cols[2].metric("Flow Percentile", f"{summary.get('flow_percentile', np.nan):.1f}%" if not pd.isna(summary.get("flow_percentile", np.nan)) else "N/A")
-    card_cols[3].metric("Is Record Inflow", str(summary.get("is_record_inflow", False)))
-    card_cols[4].metric("Is Near Record Inflow", str(summary.get("is_near_record_inflow", False)))
-
-    chart_cols = st.columns(2)
-    chart_cols[0].plotly_chart(_etf_flow_bar_chart(display_df, "Semiconductor ETF Daily / Weekly Flows"), use_container_width=True)
-    aggregate_df = display_df.groupby("date", as_index=False)["flow"].sum()
-    fig = go.Figure(go.Scatter(x=aggregate_df["date"], y=aggregate_df["flow"], mode="lines+markers", name="Aggregate Flow"))
-    fig.update_layout(title="Aggregate Semiconductor ETF Flow", height=380, margin=dict(l=10, r=10, t=55, b=20))
-    chart_cols[1].plotly_chart(fig, use_container_width=True)
-    chart_cols = st.columns(2)
-    chart_cols[0].plotly_chart(_etf_flow_bar_chart(display_df, "ETF Flow by Ticker"), use_container_width=True)
-    chart_cols[1].plotly_chart(_etf_line_chart(rolling4, "Rolling 4 Week Flow", "rolling_4_flow"), use_container_width=True)
-    chart_cols = st.columns(2)
-    chart_cols[0].plotly_chart(_etf_line_chart(rolling13, "Rolling 13 Week Flow", "rolling_13_flow"), use_container_width=True)
-    chart_cols[1].plotly_chart(_etf_line_chart(flow_aum.dropna(subset=["flow_aum_pct"]) if "flow_aum_pct" in flow_aum else flow_aum, "Flow / AUM %", "flow_aum_pct"), use_container_width=True)
-
-    overlay_cols = st.columns(2)
-    overlay_symbol = overlay_cols[0].selectbox("SMH or SOXX price overlay", [ticker for ticker in ["SMH", "SOXX"] if ticker in selected_tickers] or selected_tickers)
-    if price_provider == "None":
-        overlay_cols[1].warning("Price overlay disabled.")
-    else:
-        start = pd.to_datetime(filtered["date"]).min().date().isoformat()
-        end = (pd.to_datetime(filtered["date"]).max().date() + timedelta(days=1)).isoformat()
-        price_df = get_cached_etf_price_history(overlay_symbol, start, end, price_provider)
-        if price_df.empty:
-            overlay_cols[1].warning(f"{price_provider} price overlay unavailable for {overlay_symbol}.")
-        else:
-            fig = make_subplots(specs=[[{"secondary_y": True}]])
-            fig.add_trace(go.Bar(x=aggregate_df["date"], y=aggregate_df["flow"], name="Aggregate flow"), secondary_y=False)
-            fig.add_trace(go.Scatter(x=price_df["date"], y=price_df["close"], name=f"{overlay_symbol} close", mode="lines"), secondary_y=True)
-            fig.update_layout(title="SMH or SOXX price overlay", height=380, margin=dict(l=10, r=10, t=55, b=20))
-            overlay_cols[1].plotly_chart(fig, use_container_width=True)
-
-    if not info_df.empty and "aum" in info_df.columns:
-        aum_fig = go.Figure(go.Bar(x=info_df["ticker"], y=pd.to_numeric(info_df["aum"], errors="coerce"), name="AUM"))
-        aum_fig.update_layout(title="ETF AUM comparison", height=360, margin=dict(l=10, r=10, t=55, b=20))
-        st.plotly_chart(aum_fig, use_container_width=True)
-    else:
-        st.warning("FMP ETF AUM comparison unavailable.")
-
-    exposure_symbols = ["NVDA", "MU", "AVGO", "AMD", "TSM", "ASML", "LRCX", "AMAT", "KLAC", "INTC"]
-    if holdings_df.empty:
-        st.warning("FMP ETF holdings exposure chart unavailable.")
-    else:
-        symbol_col = next((col for col in ("asset", "symbol", "holdingSymbol") if col in holdings_df.columns), None)
-        weight_col = _holding_weight_column(holdings_df)
-        if symbol_col and weight_col:
-            exposure = holdings_df[holdings_df[symbol_col].astype(str).str.upper().isin(exposure_symbols)].copy()
-            exposure[weight_col] = pd.to_numeric(exposure[weight_col], errors="coerce")
-            exposure_fig = go.Figure()
-            for ticker, rows in exposure.groupby("ticker"):
-                exposure_fig.add_trace(go.Bar(x=rows[symbol_col].astype(str).str.upper(), y=rows[weight_col], name=ticker))
-            exposure_fig.update_layout(title="ETF holdings exposure chart", barmode="group", height=420, margin=dict(l=10, r=10, t=55, b=20))
-            st.plotly_chart(exposure_fig, use_container_width=True)
-        else:
-            st.warning("FMP holdings payload did not include recognizable symbol/weight columns.")
-
-    st.dataframe(display_df.sort_values(["date", "ticker"], ascending=[False, True]), use_container_width=True, hide_index=True)
-
-
 def main():
     st.set_page_config(page_title="Equity Research Terminal", layout="wide")
     reset_debug_state()
@@ -7327,7 +7069,7 @@ def main():
     section_labels = [
         t("technical_analysis"), t("options_gex"), t("value_investing"),
         "US Market Valuation", t("news_sentiment"), t("multi_agent_research"), t("macro"),
-        "IBKR What-if", "Semiconductor ETF Flows", mt("tab"),
+        "IBKR What-if", mt("tab"),
     ]
     selected_section = st.radio("Section", section_labels, horizontal=True, key="main_section_selector")
     section_start = perf_counter()
@@ -7347,8 +7089,6 @@ def main():
         render_macro_section()
     elif selected_section == "IBKR What-if":
         render_ibkr_what_if_section()
-    elif selected_section == "Semiconductor ETF Flows":
-        render_semiconductor_etf_flows_section()
     else:
         render_mu_valuation_model(snapshots)
     track_section_time(selected_section, perf_counter() - section_start)
