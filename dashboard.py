@@ -21,6 +21,16 @@ import streamlit as st
 import yfinance as yf
 
 from config import CACHE_DIR, get_fmp_api_key, get_openai_client
+from etf_news_monitor import (
+    ETF_COM_BLOCKED_MESSAGE,
+    ETF_COM_DAILY_FLOWS_URL,
+    ETF_COM_WEEKLY_FLOWS_URL,
+    build_etf_flow_news_digest,
+    fetch_etfcom_article,
+    fetch_etfcom_flow_articles,
+    format_etf_flow_metric,
+    parse_manual_etf_flow_text,
+)
 from financials import fetch_company_news, fetch_general_news, fetch_historical_prices, get_company_snapshot as get_fmp_company_snapshot
 from macro_data import build_macro_snapshot, fetch_indicator, fetch_macro_calendar, fetch_market_series, fetch_treasury_rates
 from option_walls import compute_option_walls
@@ -4192,8 +4202,152 @@ def render_trendforce_news_section():
         render_news_item(item)
 
 
+@st.cache_data(ttl=21600, show_spinner=False)
+def get_cached_etf_flow_news(sections, limit, refresh_nonce, watchlist):
+    track_cacheable_call()
+    track_api_call("etfcom_flow_news")
+    articles = fetch_etfcom_flow_articles(sections=sections, limit=limit, fetch_article_pages=True)
+    return build_etf_flow_news_digest(articles, watchlist=watchlist)
+
+
+def _format_etf_flow_metric(flow_row):
+    return format_etf_flow_metric(flow_row)
+
+
+def render_etf_flow_news_section():
+    st.subheader("ETF.com Flow News Monitor / ETF.com 资金流新闻摘要")
+    st.caption(
+        "Summary generated from public article metadata or user-provided excerpt. "
+        "Please verify with original ETF.com source. This is not investment advice. "
+        "Do not reproduce full ETF.com article content."
+    )
+    st.markdown(f"[Daily ETF Flows]({ETF_COM_DAILY_FLOWS_URL}) | [Weekly ETF Flows]({ETF_COM_WEEKLY_FLOWS_URL})")
+
+    if "etf_flow_news_refresh_nonce" not in st.session_state:
+        st.session_state["etf_flow_news_refresh_nonce"] = 0
+
+    controls = st.columns(4)
+    if controls[0].button("Refresh ETF.com flow news", key="refresh_etf_flow_news_light"):
+        st.session_state["etf_flow_news_refresh_nonce"] += 1
+    article_limit = controls[1].selectbox("Number of articles", [3, 5, 10], index=0, key="etf_flow_news_limit_light")
+    section_choice = controls[2].selectbox("Sections", ["Both", "Daily", "Weekly"], key="etf_flow_news_sections_light")
+    highlight_watchlist = controls[3].checkbox("Highlight tickers from my watchlist", value=True, key="etf_flow_watchlist_light")
+
+    manual_cols = st.columns([2, 1])
+    manual_url = manual_cols[0].text_input("Paste ETF.com article URL", key="etf_flow_manual_url")
+    manual_article_date = manual_cols[1].date_input(
+        "Manual article date",
+        value=date.today(),
+        key="etf_flow_manual_article_date",
+    )
+    manual_text = st.text_area("Paste article excerpt or table manually", key="etf_flow_manual_text", height=120)
+    show_extracted_tables = st.checkbox("Show extracted table data", value=True, key="etf_flow_show_tables_light")
+
+    sections = ("daily", "weekly") if section_choice == "Both" else (section_choice.lower(),)
+    watchlist = tuple(load_watchlist()) if highlight_watchlist else tuple()
+
+    auto_articles = []
+    try:
+        auto_digest = get_cached_etf_flow_news(
+            tuple(sections),
+            int(article_limit),
+            int(st.session_state["etf_flow_news_refresh_nonce"]),
+            watchlist,
+        )
+        auto_articles = auto_digest.get("articles") or []
+    except Exception:
+        st.warning(ETF_COM_BLOCKED_MESSAGE)
+
+    manual_articles = []
+    if manual_url.strip():
+        try:
+            manual_article = fetch_etfcom_article(manual_url.strip())
+            parsed_anything = bool(
+                manual_article.get("title")
+                or manual_article.get("published_date")
+                or manual_article.get("tables")
+            )
+            if parsed_anything and manual_article.get("provider_status", {}).get("ok", True):
+                manual_article["section"] = "Manual URL"
+                manual_articles.append(manual_article)
+            else:
+                st.warning("Could not parse the pasted ETF.com article URL. Paste key table rows manually.")
+        except Exception as exc:
+            st.warning(f"Could not parse the pasted ETF.com article URL: {exc}")
+
+    if manual_text.strip():
+        manual_tables = parse_manual_etf_flow_text(manual_text)
+        if manual_tables:
+            manual_articles.append({
+                "title": "Manual ETF.com excerpt/table",
+                "subtitle": "User-provided ETF.com excerpt or table rows.",
+                "published_date": manual_article_date.isoformat() if manual_article_date else "",
+                "source_url": manual_url.strip(),
+                "url": manual_url.strip(),
+                "section": "Manual Text",
+                "tables": manual_tables,
+                "provider_status": {"ok": True, "source": "manual_text"},
+            })
+        else:
+            st.warning("No ETF ticker/table rows were detected in the manual text.")
+
+    articles = manual_articles + auto_articles
+    digest = build_etf_flow_news_digest(articles, watchlist=watchlist)
+    articles = digest.get("articles") or []
+
+    provider_warnings = digest.get("provider_status", {}).get("warnings") or []
+    if provider_warnings and not manual_articles:
+        st.warning(ETF_COM_BLOCKED_MESSAGE)
+
+    if digest.get("has_real_data"):
+        metric_cols = st.columns(6)
+        metric_cols[0].metric("Latest article date", digest.get("latest_article_date") or "")
+        metric_cols[1].metric("Biggest ETF inflow", _format_etf_flow_metric(digest.get("biggest_inflow")))
+        metric_cols[2].metric("Biggest semiconductor inflow", _format_etf_flow_metric(digest.get("biggest_semiconductor_inflow")))
+        metric_cols[3].metric("Biggest leveraged ETF outflow", _format_etf_flow_metric(digest.get("biggest_leveraged_outflow")))
+        metric_cols[4].metric("Semiconductor related?", "Yes" if digest.get("semiconductor_related") else "No")
+        metric_cols[5].metric("Watchlist hit count", digest.get("watchlist_hit_count", 0))
+    else:
+        st.info("No extracted ETF flow table data yet. Paste article URL or key table rows manually.")
+
+    article_rows = []
+    for article in articles:
+        source_url = article.get("source_url") or article.get("url") or ""
+        if not (article.get("title") or source_url):
+            continue
+        article_rows.append({
+            "Article": article.get("title") or "ETF.com flow section",
+            "Date": article.get("published_date") or "",
+            "Source Link": source_url,
+            "Summary": article.get("summary_zh") or summarize_safe_etf_article(article),
+        })
+    if article_rows:
+        st.dataframe(pd.DataFrame(article_rows), use_container_width=True, hide_index=True)
+
+    for index, article in enumerate(articles):
+        title = article.get("title") or f"ETF.com flow item {index + 1}"
+        date_text = article.get("published_date") or ""
+        source_url = article.get("source_url") or article.get("url") or ""
+        with st.expander(f"{date_text} | {title}" if date_text else title, expanded=index == 0):
+            if source_url:
+                st.markdown(f"[Source link]({source_url})")
+            st.write(article.get("summary_zh") or summarize_safe_etf_article(article))
+            tables = article.get("tables") or []
+            if tables and show_extracted_tables:
+                for table in tables:
+                    rows = table.get("rows") or []
+                    if rows:
+                        st.markdown(f"##### {table.get('title') or 'Extracted table'}")
+                        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+
+def summarize_safe_etf_article(article):
+    return article.get("summary_zh") or "检测到 ETF.com 资金流栏目链接，但未能自动提取文章数据。"
+
+
 def render_news_section():
-    news_sections = [t("fmp_news_tab"), t("yahoo_news_tab"), t("trendforce_news_tab")]
+    etf_flow_tab = "ETF.com Flow News"
+    news_sections = [t("fmp_news_tab"), t("yahoo_news_tab"), t("trendforce_news_tab"), etf_flow_tab]
     selected_news_section = st.radio(
         t("select_source"),
         news_sections,
@@ -4205,8 +4359,10 @@ def render_news_section():
             render_fmp_news_section()
         elif selected_news_section == t("yahoo_news_tab"):
             render_yahoo_news_section()
-        else:
+        elif selected_news_section == t("trendforce_news_tab"):
             render_trendforce_news_section()
+        else:
+            render_etf_flow_news_section()
 
 
 def get_cached_yahoo_rss_headlines(ticker, limit=5):
