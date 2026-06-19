@@ -545,9 +545,11 @@ MACRO_TRANSLATION_OVERRIDES = {
 for _language, _labels in MACRO_TRANSLATION_OVERRIDES.items():
     TRANSLATIONS.setdefault(_translation_language_key(_language), {}).update(_labels)
 
+DEFAULT_LANGUAGE = "中文"
+
 
 def t(key):
-    language = st.session_state.get("language", "English")
+    language = st.session_state.get("language", DEFAULT_LANGUAGE)
     return TRANSLATIONS.get(language, TRANSLATIONS["English"]).get(key, TRANSLATIONS["English"].get(key, key))
 
 
@@ -7205,7 +7207,12 @@ def main():
         """,
         unsafe_allow_html=True,
     )
-    st.sidebar.selectbox(t("language"), list(TRANSLATIONS), index=0, key="language")
+    language_options = list(TRANSLATIONS)
+    selected_language = st.session_state.get("language", DEFAULT_LANGUAGE)
+    default_language_index = language_options.index(
+        selected_language if selected_language in language_options else DEFAULT_LANGUAGE
+    )
+    st.sidebar.selectbox(t("language"), language_options, index=default_language_index, key="language")
     render_watchlist_manager()
     st.title(t("dashboard_title"))
     st.caption(t("dashboard_caption"))
