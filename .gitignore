@@ -10,3 +10,15 @@ cache/
 streamlit-local.pid
 streamlit-local.stderr.log
 streamlit-local.stdout.log
+# Streamlit secrets - do not commit API keys
+.streamlit/secrets.toml
+
+# Streamlit local runtime files
+streamlit-*.pid
+streamlit-*.log
+streamlit-*.job
+*.stderr.log
+*.stdout.log
+
+# Pytest cache
+.pytest_cache/
