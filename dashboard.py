@@ -31,6 +31,7 @@ from etf_news_monitor import (
     format_etf_flow_metric,
     parse_manual_etf_flow_text,
 )
+from factor_watch import render_factor_watch_section
 from financials import fetch_company_news, fetch_general_news, fetch_historical_prices, get_company_snapshot as get_fmp_company_snapshot
 from macro_data import build_macro_snapshot, fetch_indicator, fetch_macro_calendar, fetch_market_series, fetch_treasury_rates
 from option_walls import compute_option_walls
@@ -7231,7 +7232,7 @@ def main():
 
     section_labels = [
         t("technical_analysis"), t("options_gex"), t("value_investing"),
-        "US Market Valuation", t("news_sentiment"), t("multi_agent_research"), t("macro"),
+        "US Market Valuation", "Factor Watch 因子监控", t("news_sentiment"), t("multi_agent_research"), t("macro"),
         "IBKR What-if", mt("tab"),
     ]
     selected_section = st.radio("Section", section_labels, horizontal=True, key="main_section_selector")
@@ -7244,6 +7245,8 @@ def main():
         render_value_section()
     elif selected_section == "US Market Valuation":
         render_us_market_valuation_dashboard()
+    elif selected_section == "Factor Watch 因子监控":
+        render_factor_watch_section()
     elif selected_section == t("news_sentiment"):
         render_news_section()
     elif selected_section == t("multi_agent_research"):
