@@ -1,9 +1,29 @@
+import inspect
+
 import pytest
 
 from conftest import import_root_dashboard
 
 
 dashboard = import_root_dashboard()
+
+
+def test_dashboard_reexports_yahoo_news_normalization_helpers():
+    from services import news_normalization
+
+    helper_names = (
+        "_format_yfinance_datetime",
+        "_extract_yfinance_url",
+        "_normalize_yfinance_news_item",
+    )
+    for name in helper_names:
+        assert getattr(dashboard, name) is getattr(news_normalization, name)
+
+
+def test_yahoo_news_normalization_helper_signatures_are_characterized():
+    assert str(inspect.signature(dashboard._format_yfinance_datetime)) == "(value)"
+    assert str(inspect.signature(dashboard._extract_yfinance_url)) == "(item, content)"
+    assert str(inspect.signature(dashboard._normalize_yfinance_news_item)) == "(item, ticker)"
 
 
 @pytest.fixture(autouse=True)
