@@ -1,6 +1,8 @@
 from datetime import datetime
 import io
 
+import numpy as np
+
 from what_if_analysis import (
     CSV_FALLBACK_SOURCE,
     PRICE_MODE_REALTIME,
@@ -373,3 +375,60 @@ def test_price_source_prefers_ibkr_then_yahoo_then_fmp_then_csv():
     assert resolved["LITX"]["price_source"] == "IBKR snapshot plprice"
     assert resolved["MU"]["price_source"] == "Yahoo Finance postMarketPrice"
     assert resolved["NVDA"]["price_source"] == "FMP quote price"
+
+
+def test_invalid_live_prices_are_skipped_before_valid_fallback_source():
+    resolved = resolve_current_price_details(
+        ["MU", "NVDA"],
+        price_mode=PRICE_MODE_REALTIME,
+        ibkr_details={
+            "MU": make_price_detail(np.nan, "IBKR invalid"),
+            "NVDA": make_price_detail(None, "IBKR unavailable"),
+        },
+        yahoo_details={"MU": make_price_detail("90.50", "Yahoo Finance regularMarketPrice")},
+        fmp_details={"NVDA": make_price_detail("bad-price", "FMP invalid")},
+        csv_details={"NVDA": make_price_detail("120.25", CSV_FALLBACK_SOURCE, is_fallback=True)},
+    )
+
+    assert resolved == {
+        "MU": {
+            "price": 90.5,
+            "price_source": "Yahoo Finance regularMarketPrice",
+            "price_time": None,
+            "is_fallback": False,
+        },
+        "NVDA": {
+            "price": 120.25,
+            "price_source": CSV_FALLBACK_SOURCE,
+            "price_time": None,
+            "is_fallback": True,
+        },
+    }
+
+
+def test_missing_current_price_keeps_symbol_and_contributes_zero_without_fake_price():
+    result = build_what_if_analysis(
+        actual_equity="10000",
+        positions=[{"symbol": "NVDA", "quantity": "10"}],
+        trades=[{"symbol": "NVDA", "side": "BUY", "quantity": "2", "price": "100", "commission": "-1"}],
+        current_prices={},
+        price_details={},
+    )
+
+    assert result["trading_value_added"] == 0.0
+    assert result["no_trade_equity"] == 10_000.0
+    assert result["rows"] == [
+        {
+            "Symbol": "NVDA",
+            "Trades in period": 1,
+            "Buy quantity": 2.0,
+            "Sell quantity": 0,
+            "Actual Position": 10.0,
+            "No-trade Position": 8.0,
+            "Current Price": None,
+            "price_source": None,
+            "price_time": None,
+            "is_fallback": False,
+            "Trading Value Added": 0.0,
+        }
+    ]

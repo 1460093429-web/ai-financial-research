@@ -3,6 +3,7 @@ import numpy as np
 import pandas as pd
 
 from factor_watch import (
+    FACTOR_COLUMNS,
     FACTOR_DEFINITIONS,
     build_factor_metrics,
     build_factor_watch_df,
@@ -10,6 +11,30 @@ from factor_watch import (
     get_etf_top_holdings,
     get_factor_explanation,
 )
+
+
+def test_build_factor_watch_df_empty_input_preserves_schema():
+    for prices in (None, pd.DataFrame(), pd.DataFrame({"SPY": [np.nan]})):
+        result = build_factor_watch_df(prices)
+
+        assert result.empty
+        assert list(result.columns) == FACTOR_COLUMNS
+
+
+def test_build_factor_watch_df_coerces_numeric_strings_and_drops_invalid_ratio_values():
+    prices = pd.DataFrame(
+        {
+            "VTV": ["100", "102", "bad", "108"],
+            "VUG": ["50", "0", "52", "54"],
+        },
+        index=pd.to_datetime(["2026-01-01", "2026-01-02", "2026-01-02", "2026-01-03"]),
+    )
+
+    result = build_factor_watch_df(prices)
+
+    assert list(result["Ratio"]) == ["VTV / VUG"]
+    assert result.iloc[0]["Current"] == 2.0
+    assert result.iloc[0]["Signal"] == "Neutral"
 
 
 def test_build_factor_watch_df_contains_required_columns_and_rows():

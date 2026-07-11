@@ -47,3 +47,31 @@ def test_compute_option_walls_tiebreaks_by_lowest_strike_without_spot():
     assert result["put_wall"]["strike"] == 140
     assert result["call_wall"]["strike"] == 200
     assert result["call_wall"]["open_interest"] == 0
+
+
+def test_compute_option_walls_empty_or_missing_required_fields_returns_explicit_empty_walls():
+    expected = {
+        "put_wall": {"strike": None, "open_interest": 0.0},
+        "call_wall": {"strike": None, "open_interest": 0.0},
+    }
+
+    assert compute_option_walls(None, "2026-06-26") == expected
+    assert compute_option_walls(pd.DataFrame(), "2026-06-26") == expected
+    assert compute_option_walls(pd.DataFrame({"strike": [100]}), "2026-06-26") == expected
+
+
+def test_compute_option_walls_filters_expiry_and_invalid_rows_without_aggregating_duplicates():
+    options = pd.DataFrame([
+        {"expirationDate": "2026-06-26", "option_type": "P", "strike": "150", "open_interest": "250"},
+        {"expirationDate": "2026-06-26", "option_type": "put", "strike": "150", "open_interest": "250"},
+        {"expirationDate": "2026-06-26", "option_type": "put", "strike": "bad", "open_interest": "9999"},
+        {"expirationDate": "2026-06-26", "option_type": "call", "strike": "180", "open_interest": None},
+        {"expirationDate": "2026-07-17", "option_type": "call", "strike": "200", "open_interest": "9000"},
+    ])
+
+    result = compute_option_walls(options, "2026-06-26", spot_price="160")
+
+    assert result == {
+        "put_wall": {"strike": 150.0, "open_interest": 250.0},
+        "call_wall": {"strike": 180.0, "open_interest": 0.0},
+    }
