@@ -28,6 +28,9 @@ CORE_UI_KEYS = {
     "option_price_available_chain_unavailable",
 }
 
+SUPPORTED_LANGUAGES = ("English", "中文", "Español")
+RUNTIME_TRANSLATION_KEY_COUNT = 198
+
 
 def test_dashboard_translation_key_sets_are_identical_for_all_supported_languages():
     assert set(dashboard.TRANSLATIONS) == {"English", "中文", "Español"}
@@ -36,6 +39,11 @@ def test_dashboard_translation_key_sets_are_identical_for_all_supported_language
     assert CORE_UI_KEYS <= english_keys
     assert set(dashboard.TRANSLATIONS["中文"]) == english_keys
     assert set(dashboard.TRANSLATIONS["Español"]) == english_keys
+
+
+def test_dashboard_runtime_translation_size_is_characterized():
+    for language in SUPPORTED_LANGUAGES:
+        assert len(dashboard.TRANSLATIONS[language]) == RUNTIME_TRANSLATION_KEY_COUNT
 
 
 def test_dashboard_translation_values_for_core_keys_are_non_empty_strings():
@@ -55,10 +63,44 @@ def test_translation_lookup_uses_selected_language_and_english_fallback(monkeypa
     assert dashboard.t("missing_characterization_key") == "missing_characterization_key"
 
 
+def test_translation_lookup_uses_default_language_when_session_language_is_missing(monkeypatch):
+    monkeypatch.setattr(dashboard.st, "session_state", {})
+
+    assert dashboard.DEFAULT_LANGUAGE == "中文"
+    assert dashboard.t("dashboard_title") == dashboard.TRANSLATIONS["中文"]["dashboard_title"]
+
+
+def test_translation_lookup_falls_back_when_selected_language_lacks_key(monkeypatch):
+    monkeypatch.setattr(dashboard.st, "session_state", {"language": "中文"})
+    english_value = dashboard.TRANSLATIONS["English"]["dashboard_caption"]
+    monkeypatch.delitem(dashboard.TRANSLATIONS["中文"], "dashboard_caption")
+
+    assert dashboard.t("dashboard_caption") == english_value
+
+
+def test_translation_lookup_returns_key_when_all_languages_lack_it(monkeypatch):
+    monkeypatch.setattr(dashboard.st, "session_state", {})
+
+    assert dashboard.t("translation_key_absent_everywhere") == "translation_key_absent_everywhere"
+
+
 def test_translation_language_key_preserves_supported_canonical_names():
     assert dashboard._translation_language_key("English") == "English"
     assert dashboard._translation_language_key("中文") == "中文"
     assert dashboard._translation_language_key("Español") == "Español"
+
+
+def test_static_translation_overrides_are_reexported_and_merged_by_identity():
+    from translations.macro import MACRO_TRANSLATION_OVERRIDES
+    from translations.news_ui import NEWS_UI_TRANSLATION_OVERRIDES
+
+    assert dashboard.MACRO_TRANSLATION_OVERRIDES is MACRO_TRANSLATION_OVERRIDES
+    assert dashboard.NEWS_UI_TRANSLATION_OVERRIDES is NEWS_UI_TRANSLATION_OVERRIDES
+    for language in SUPPORTED_LANGUAGES:
+        for key, value in NEWS_UI_TRANSLATION_OVERRIDES[language].items():
+            assert dashboard.TRANSLATIONS[language][key] == value
+        for key, value in MACRO_TRANSLATION_OVERRIDES[language].items():
+            assert dashboard.TRANSLATIONS[language][key] == value
 
 
 def test_multi_agent_translation_keys_and_dashboard_reexport_are_stable():
