@@ -1,3 +1,8 @@
+import ast
+import hashlib
+import json
+from pathlib import Path
+
 from conftest import import_root_dashboard
 
 
@@ -30,6 +35,41 @@ CORE_UI_KEYS = {
 
 SUPPORTED_LANGUAGES = ("English", "中文", "Español")
 RUNTIME_TRANSLATION_KEY_COUNT = 198
+BASE_TRANSLATION_KEY_COUNT = 141
+PRE_MIGRATION_TRANSLATIONS_SHA256 = "3085aae6dbfd5b55cd4f7f4f5962e673aa1ce1244f1586891e593b21a6101608"
+
+
+def _core_translations_ast_value():
+    core_path = Path(__file__).resolve().parents[1] / "translations" / "core.py"
+    tree = ast.parse(core_path.read_text(encoding="utf-8"))
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id == "TRANSLATIONS"
+            for target in node.targets
+        ):
+            return ast.literal_eval(node.value)
+    raise AssertionError("translations/core.py must define TRANSLATIONS as a literal assignment")
+
+
+def test_core_translations_match_pre_migration_head_ast_value():
+    translations = _core_translations_ast_value()
+    serialized = json.dumps(
+        translations,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+    assert hashlib.sha256(serialized).hexdigest() == PRE_MIGRATION_TRANSLATIONS_SHA256
+    assert set(translations) == set(SUPPORTED_LANGUAGES)
+    for language in SUPPORTED_LANGUAGES:
+        assert len(translations[language]) == BASE_TRANSLATION_KEY_COUNT
+
+
+def test_dashboard_reexports_shared_core_translations_object():
+    from translations.core import TRANSLATIONS
+
+    assert dashboard.TRANSLATIONS is TRANSLATIONS
 
 
 def test_dashboard_translation_key_sets_are_identical_for_all_supported_languages():
