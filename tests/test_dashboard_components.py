@@ -8,6 +8,13 @@ from conftest import import_root_dashboard
 dashboard = import_root_dashboard()
 
 
+def test_dashboard_reexports_market_card_components():
+    from components.market_cards import render_metric_row, render_snapshot_card
+
+    assert dashboard.render_snapshot_card is render_snapshot_card
+    assert dashboard.render_metric_row is render_metric_row
+
+
 class MarkdownRecorder:
     def __init__(self):
         self.calls = []
