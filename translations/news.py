@@ -1,5 +1,17 @@
 """Static news labels, UI text, language mappings, and version constants."""
 
+POSITIVE_NEWS_KEYWORDS = (
+    "beat", "raise", "growth", "demand", "upgrade", "strong", "record",
+    "expansion", "partnership",
+)
+NEGATIVE_NEWS_KEYWORDS = (
+    "miss", "cut", "downgrade", "weak", "lawsuit", "decline", "guidance cut",
+    "export restriction", "inventory", "margin pressure",
+)
+MARKET_NEWS_KEYWORDS = (
+    "semiconductor", "ai", "memory", "dram", "nand", "data center", "nvidia", "micron",
+)
+
 NEWS_SUMMARY_LABELS = {
     "English": "AI Summary",
     "\u4e2d\u6587": "AI \u603b\u7ed3",

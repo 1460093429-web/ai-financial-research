@@ -101,6 +101,9 @@ def test_news_static_resources_are_reexported_without_behavior_changes():
         "NEWS_SUMMARY_FIELD_LABELS",
         "NEWS_SUMMARY_UI",
         "NEWS_DRIVER_KEYWORDS",
+        "POSITIVE_NEWS_KEYWORDS",
+        "NEGATIVE_NEWS_KEYWORDS",
+        "MARKET_NEWS_KEYWORDS",
     )
     for name in resource_names:
         assert getattr(dashboard, name) is getattr(news, name)
@@ -127,4 +130,15 @@ def test_news_versions_and_driver_keywords_are_unchanged():
         "eps",
         "guidance",
         "margin",
+    )
+    assert news.POSITIVE_NEWS_KEYWORDS == (
+        "beat", "raise", "growth", "demand", "upgrade", "strong", "record",
+        "expansion", "partnership",
+    )
+    assert news.NEGATIVE_NEWS_KEYWORDS == (
+        "miss", "cut", "downgrade", "weak", "lawsuit", "decline", "guidance cut",
+        "export restriction", "inventory", "margin pressure",
+    )
+    assert news.MARKET_NEWS_KEYWORDS == (
+        "semiconductor", "ai", "memory", "dram", "nand", "data center", "nvidia", "micron",
     )

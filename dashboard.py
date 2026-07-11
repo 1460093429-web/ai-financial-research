@@ -55,6 +55,8 @@ from translations.news import (
     AI_SENTIMENT_VERSION,
     AI_SUMMARY_VERSION,
     AI_TRANSLATION_VERSION,
+    MARKET_NEWS_KEYWORDS,
+    NEGATIVE_NEWS_KEYWORDS,
     NEWS_DETAILED_SUMMARY_LABELS,
     NEWS_DETAILED_SUMMARY_UI,
     NEWS_DETAILED_SUMMARY_UNAVAILABLE,
@@ -67,6 +69,7 @@ from translations.news import (
     NEWS_SUMMARY_UI,
     NEWS_TRANSLATION_LABELS,
     NEWS_TRANSLATION_UI,
+    POSITIVE_NEWS_KEYWORDS,
 )
 from translations.news_ui import NEWS_UI_TRANSLATION_OVERRIDES
 
@@ -192,17 +195,6 @@ def remove_ticker_from_watchlist(ticker):
     return True, "watchlist_removed_success", symbol
 
 
-POSITIVE_NEWS_KEYWORDS = (
-    "beat", "raise", "growth", "demand", "upgrade", "strong", "record",
-    "expansion", "partnership",
-)
-NEGATIVE_NEWS_KEYWORDS = (
-    "miss", "cut", "downgrade", "weak", "lawsuit", "decline", "guidance cut",
-    "export restriction", "inventory", "margin pressure",
-)
-MARKET_NEWS_KEYWORDS = (
-    "semiconductor", "ai", "memory", "dram", "nand", "data center", "nvidia", "micron",
-)
 TRANSLATIONS = {
     "English": {
         "language": "Language", "dashboard_title": "Equity Research Terminal",
