@@ -1,4 +1,6 @@
 import builtins
+import ast
+import inspect
 from types import SimpleNamespace
 
 import pytest
@@ -7,6 +9,7 @@ from conftest import import_root_dashboard
 
 
 dashboard = import_root_dashboard()
+from providers import trendforce as trendforce_provider
 
 CHINESE_URLS = [
     "https://www.trendforce.cn",
@@ -68,6 +71,50 @@ def forbid_unexpected_external_state(monkeypatch):
     monkeypatch.setattr(builtins, "open", lambda *args, **kwargs: pytest.fail("file I/O must not run"))
 
 
+def test_provider_and_dashboard_wrapper_signatures_are_characterized():
+    assert str(inspect.signature(dashboard.get_trendforce_news)) == "(limit=20)"
+    assert str(inspect.signature(trendforce_provider.get_trendforce_news)) == (
+        "(limit=20, track_api_call_fn=None)"
+    )
+
+
+def test_trendforce_provider_does_not_import_dashboard():
+    source = inspect.getsource(trendforce_provider)
+    tree = ast.parse(source)
+    imported_roots = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported_roots.update(alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imported_roots.add(node.module.split(".")[0])
+    assert "dashboard" not in imported_roots
+
+
+def test_dashboard_wrapper_delegates_limit_and_tracking_callback(monkeypatch):
+    calls = []
+
+    def fake_provider(limit, track_api_call_fn=None):
+        calls.append((limit, track_api_call_fn))
+        return [item(1)]
+
+    monkeypatch.setattr(dashboard, "_provider_get_trendforce_news", fake_provider)
+
+    assert dashboard.get_trendforce_news(limit=3) == [item(1)]
+    assert calls == [(3, dashboard.track_api_call)]
+
+
+def test_provider_runs_without_tracking_callback(monkeypatch):
+    monkeypatch.setattr(trendforce_provider.requests, "get", lambda *args, **kwargs: FakeResponse(text="html"))
+    monkeypatch.setattr(trendforce_provider, "_trendforce_items_from_soup", lambda *args, **kwargs: [item(1)])
+    monkeypatch.setattr(
+        trendforce_provider,
+        "_trendforce_items_from_regex",
+        lambda *args, **kwargs: pytest.fail("regex must not run"),
+    )
+
+    assert trendforce_provider.get_trendforce_news(limit=1, track_api_call_fn=None) == [item(1)]
+
+
 def test_chinese_homepage_success_preserves_request_parser_and_debug_flow(monkeypatch):
     response = FakeResponse(text="chinese homepage", apparent_encoding="utf-8", encoding="legacy")
     request_calls = []
@@ -84,9 +131,9 @@ def test_chinese_homepage_success_preserves_request_parser_and_debug_flow(monkey
         return expected
 
     monkeypatch.setattr(dashboard.requests, "get", fake_get)
-    monkeypatch.setattr(dashboard, "_trendforce_items_from_soup", fake_soup)
+    monkeypatch.setattr(trendforce_provider, "_trendforce_items_from_soup", fake_soup)
     monkeypatch.setattr(
-        dashboard,
+        trendforce_provider,
         "_trendforce_items_from_regex",
         lambda *args, **kwargs: pytest.fail("regex fallback must not run when soup returns items"),
     )
@@ -114,13 +161,13 @@ def test_soup_none_uses_regex_fallback_without_feedparser(monkeypatch):
     regex_result = [item(1)]
     regex_calls = []
     monkeypatch.setattr(dashboard.requests, "get", lambda *args, **kwargs: response)
-    monkeypatch.setattr(dashboard, "_trendforce_items_from_soup", lambda *args, **kwargs: None)
+    monkeypatch.setattr(trendforce_provider, "_trendforce_items_from_soup", lambda *args, **kwargs: None)
 
     def fake_regex(page_html, base_url):
         regex_calls.append((page_html, base_url))
         return regex_result
 
-    monkeypatch.setattr(dashboard, "_trendforce_items_from_regex", fake_regex)
+    monkeypatch.setattr(trendforce_provider, "_trendforce_items_from_regex", fake_regex)
     monkeypatch.setattr(
         dashboard.feedparser,
         "parse",
@@ -146,9 +193,9 @@ def test_empty_soup_results_skip_regex_and_fall_through_to_english_html(monkeypa
         return english_result if base_url == ENGLISH_URLS[0] else []
 
     monkeypatch.setattr(dashboard.requests, "get", fake_get)
-    monkeypatch.setattr(dashboard, "_trendforce_items_from_soup", fake_soup)
+    monkeypatch.setattr(trendforce_provider, "_trendforce_items_from_soup", fake_soup)
     monkeypatch.setattr(
-        dashboard,
+        trendforce_provider,
         "_trendforce_items_from_regex",
         lambda *args, **kwargs: pytest.fail("empty soup list does not invoke regex in current behavior"),
     )
@@ -201,9 +248,9 @@ def test_all_html_empty_falls_through_to_rss_and_preserves_metadata_order_and_du
         return feed
 
     monkeypatch.setattr(dashboard.requests, "get", fake_get)
-    monkeypatch.setattr(dashboard, "_trendforce_items_from_soup", lambda *args, **kwargs: [])
+    monkeypatch.setattr(trendforce_provider, "_trendforce_items_from_soup", lambda *args, **kwargs: [])
     monkeypatch.setattr(
-        dashboard,
+        trendforce_provider,
         "_trendforce_items_from_regex",
         lambda *args, **kwargs: pytest.fail("empty soup list does not invoke regex"),
     )
@@ -233,9 +280,9 @@ def test_all_html_empty_falls_through_to_rss_and_preserves_metadata_order_and_du
 def test_limit_truncation_and_ten_item_cap(monkeypatch, limit, expected_count):
     source_items = [item(number) for number in range(1, 13)]
     monkeypatch.setattr(dashboard.requests, "get", lambda *args, **kwargs: FakeResponse(text="html"))
-    monkeypatch.setattr(dashboard, "_trendforce_items_from_soup", lambda *args, **kwargs: source_items)
+    monkeypatch.setattr(trendforce_provider, "_trendforce_items_from_soup", lambda *args, **kwargs: source_items)
     monkeypatch.setattr(
-        dashboard,
+        trendforce_provider,
         "_trendforce_items_from_regex",
         lambda *args, **kwargs: pytest.fail("regex must not run"),
     )
@@ -276,9 +323,9 @@ def test_timeouts_status_errors_and_parser_errors_do_not_interrupt_source_sequen
         return []
 
     monkeypatch.setattr(dashboard.requests, "get", fake_get)
-    monkeypatch.setattr(dashboard, "_trendforce_items_from_soup", fake_soup)
+    monkeypatch.setattr(trendforce_provider, "_trendforce_items_from_soup", fake_soup)
     monkeypatch.setattr(
-        dashboard,
+        trendforce_provider,
         "_trendforce_items_from_regex",
         lambda *args, **kwargs: pytest.fail("regex must not run when soup raises or returns []"),
     )
@@ -301,8 +348,8 @@ def test_feedparser_is_not_called_for_non_rss_english_pages(monkeypatch):
         return SimpleNamespace(entries=[])
 
     monkeypatch.setattr(dashboard.requests, "get", fake_get)
-    monkeypatch.setattr(dashboard, "_trendforce_items_from_soup", lambda *args, **kwargs: [])
-    monkeypatch.setattr(dashboard, "_trendforce_items_from_regex", lambda *args, **kwargs: [])
+    monkeypatch.setattr(trendforce_provider, "_trendforce_items_from_soup", lambda *args, **kwargs: [])
+    monkeypatch.setattr(trendforce_provider, "_trendforce_items_from_regex", lambda *args, **kwargs: [])
     monkeypatch.setattr(dashboard.feedparser, "parse", fake_parse)
     monkeypatch.setattr(dashboard, "track_api_call", lambda name: None)
 

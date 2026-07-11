@@ -49,6 +49,7 @@ from factor_watch import render_factor_watch_section
 from financials import fetch_company_news, fetch_general_news, fetch_historical_prices, get_company_snapshot as get_fmp_company_snapshot
 from macro_data import build_macro_snapshot, fetch_indicator, fetch_macro_calendar, fetch_market_series, fetch_treasury_rates
 from option_walls import compute_option_walls
+from providers.trendforce import get_trendforce_news as _provider_get_trendforce_news
 from services.news_normalization import (
     _build_trendforce_item,
     _clean_trendforce_text,
@@ -2508,65 +2509,7 @@ def get_cached_watchlist_yahoo_news(tickers, limit_per_ticker=10):
 
 
 def get_trendforce_news(limit=20):
-    track_api_call("trendforce_news")
-    limit = min(int(limit or 10), 10)
-    headers = {"User-Agent": "Mozilla/5.0"}
-    chinese_urls = [
-        "https://www.trendforce.cn",
-        "https://www.trendforce.cn/presscenter/news",
-        "https://www.trendforce.cn/presscenter/news/Semiconductors",
-        "https://www.trendforce.cn/presscenter",
-    ]
-    english_urls = [
-        "https://www.trendforce.com/presscenter/news",
-        "https://www.trendforce.com/presscenter/news/Semiconductors",
-        "https://www.trendforce.com/presscenter/rss.html",
-    ]
-
-    def fetch_html_items(url, homepage=False):
-        response = requests.get(url, headers=headers, timeout=6)
-        response.raise_for_status()
-        response.encoding = response.apparent_encoding or response.encoding
-        soup_items = _trendforce_items_from_soup(response.text, url, homepage=homepage)
-        return soup_items if soup_items is not None else _trendforce_items_from_regex(response.text, url)
-
-    for index, url in enumerate(chinese_urls):
-        try:
-            items = fetch_html_items(url, homepage=index == 0)
-            if items:
-                return items[:limit]
-        except Exception:
-            continue
-
-    for url in english_urls:
-        try:
-            response = requests.get(url, headers=headers, timeout=6)
-            response.raise_for_status()
-            if url.endswith("rss.html"):
-                feed = feedparser.parse(response.content)
-                items = []
-                for entry in feed.entries[:limit]:
-                    published_date = _extract_trendforce_date(entry.get("published") or entry.get("updated") or "")
-                    item = _build_trendforce_item(
-                        entry.get("title") or "",
-                        entry.get("link") or url,
-                        published_date,
-                        entry.get("category") or "Semiconductors",
-                        entry.get("summary") or entry.get("description") or entry.get("title") or "",
-                    )
-                    if item:
-                        items.append(item)
-                if items:
-                    return items[:limit]
-            else:
-                response.encoding = response.apparent_encoding or response.encoding
-                soup_items = _trendforce_items_from_soup(response.text, url, homepage=False)
-                items = soup_items if soup_items is not None else _trendforce_items_from_regex(response.text, url)
-                if items:
-                    return items[:limit]
-        except Exception:
-            continue
-    return []
+    return _provider_get_trendforce_news(limit, track_api_call_fn=track_api_call)
 
 
 @st.cache_data(ttl=1800)
