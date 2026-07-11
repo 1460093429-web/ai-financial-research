@@ -83,3 +83,12 @@ MULTI_AGENT_TEXTS = {
         "mixed_setup": "La configuración es mixta según los datos disponibles.",
     },
 }
+
+
+def multi_agent_language(language):
+    language_text = str(language or "")
+    if language_text == "中文" or language_text.lower() in ("zh", "chinese"):
+        return "中文"
+    if language_text == "Español" or language_text.lower() in ("es", "spanish", "español") or language_text.startswith("Espa"):
+        return "Español"
+    return "English"

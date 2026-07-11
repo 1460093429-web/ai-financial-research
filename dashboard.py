@@ -48,7 +48,9 @@ from factor_watch import render_factor_watch_section
 from financials import fetch_company_news, fetch_general_news, fetch_historical_prices, get_company_snapshot as get_fmp_company_snapshot
 from macro_data import build_macro_snapshot, fetch_indicator, fetch_macro_calendar, fetch_market_series, fetch_treasury_rates
 from option_walls import compute_option_walls
-from translations.multi_agent import MULTI_AGENT_TEXTS
+from translations.macro import MACRO_TRANSLATION_OVERRIDES
+from translations.multi_agent import MULTI_AGENT_TEXTS, multi_agent_language as _multi_agent_language
+from translations.news_ui import NEWS_UI_TRANSLATION_OVERRIDES
 
 
 YFINANCE_CACHE_DIR = CACHE_DIR / "yfinance"
@@ -317,97 +319,6 @@ TRANSLATIONS = {
 }
 
 
-NEWS_UI_TRANSLATION_OVERRIDES = {
-    "English": {
-        "full_translation": "Full Translation",
-        "chatgpt_detailed_summary": "ChatGPT Detailed Summary",
-        "open_article": "Open article",
-        "trendforce_news_tab": "TrendForce News",
-        "trendforce_news": "TrendForce News",
-        "trendforce_news_caption": "TrendForce semiconductor and memory industry news.",
-        "no_trendforce_news": "TrendForce news has no data or is not configured yet.",
-        "watchlist_manager": "Stock Watchlist",
-        "watchlist_input": "Enter stock ticker",
-        "watchlist_add": "Add stock",
-        "watchlist_remove": "Remove stock",
-        "watchlist_current": "Current watchlist",
-        "watchlist_ticker_exists": "Stock already exists.",
-        "watchlist_added_success": "Stock added successfully.",
-        "watchlist_removed_success": "Stock removed successfully.",
-        "watchlist_invalid_ticker": "Invalid stock ticker.",
-        "option_expiry": "Option expiration",
-        "current_expiry": "Current expiration",
-        "option_expirations_not_found": "No available option expirations found",
-        "option_open_interest_missing": "This expiration did not return open interest data",
-        "option_gamma_missing": "The data source did not return gamma, so net GEX cannot be calculated",
-        "option_call_put_empty": "Call/put data is empty for this expiration",
-        "option_price_available_chain_unavailable": "Price is available, but the option chain is unavailable",
-        "options_ai_summary": "Options AI Summary",
-        "generate_options_ai_summary": "Generate Options AI Summary",
-        "options_ai_summary_idle": "Generate this summary on demand to limit AI costs.",
-        "options_ai_summary_disclaimer": "Risk disclaimer: this is not financial advice.",
-    },
-    "\u4e2d\u6587": {
-        "full_translation": "\u5168\u6587\u7ffb\u8bd1",
-        "chatgpt_detailed_summary": "ChatGPT \u8be6\u7ec6\u603b\u7ed3",
-        "open_article": "\u6253\u5f00\u6587\u7ae0",
-        "trendforce_news_tab": "TrendForce \u65b0\u95fb",
-        "trendforce_news": "TrendForce \u65b0\u95fb",
-        "trendforce_news_caption": "TrendForce \u534a\u5bfc\u4f53\u4e0e\u5b58\u50a8\u884c\u4e1a\u65b0\u95fb\u3002",
-        "no_trendforce_news": "TrendForce \u65b0\u95fb\u6682\u65e0\u6570\u636e\u6216\u5c1a\u672a\u914d\u7f6e\u3002",
-        "watchlist_manager": "\u80a1\u7968\u89c2\u5bdf\u5217\u8868",
-        "watchlist_input": "\u8f93\u5165\u80a1\u7968\u4ee3\u7801",
-        "watchlist_add": "\u6dfb\u52a0\u80a1\u7968",
-        "watchlist_remove": "\u5220\u9664\u80a1\u7968",
-        "watchlist_current": "\u5f53\u524d\u89c2\u5bdf\u5217\u8868",
-        "watchlist_ticker_exists": "\u80a1\u7968\u5df2\u5b58\u5728\u3002",
-        "watchlist_added_success": "\u80a1\u7968\u6dfb\u52a0\u6210\u529f\u3002",
-        "watchlist_removed_success": "\u80a1\u7968\u5220\u9664\u6210\u529f\u3002",
-        "watchlist_invalid_ticker": "\u80a1\u7968\u4ee3\u7801\u65e0\u6548\u3002",
-        "option_expiry": "\u671f\u6743\u5230\u671f\u65e5",
-        "current_expiry": "\u5f53\u524d\u5230\u671f\u65e5",
-        "option_expirations_not_found": "\u672a\u627e\u5230\u53ef\u7528\u671f\u6743\u5230\u671f\u65e5",
-        "option_open_interest_missing": "\u8be5\u5230\u671f\u65e5\u6ca1\u6709\u8fd4\u56de open interest \u6570\u636e",
-        "option_gamma_missing": "\u8be5\u6570\u636e\u6e90\u672a\u8fd4\u56de gamma\uff0c\u51c0 GEX \u65e0\u6cd5\u8ba1\u7b97",
-        "option_call_put_empty": "\u8be5\u5230\u671f\u65e5 call/put \u6570\u636e\u4e3a\u7a7a",
-        "option_price_available_chain_unavailable": "\u4ef7\u683c\u53ef\u7528\uff0c\u4f46\u671f\u6743\u94fe\u4e0d\u53ef\u7528",
-        "options_ai_summary": "\u671f\u6743 AI \u603b\u7ed3",
-        "generate_options_ai_summary": "\u751f\u6210\u671f\u6743 AI \u603b\u7ed3",
-        "options_ai_summary_idle": "\u6309\u9700\u751f\u6210\u6b64\u603b\u7ed3\uff0c\u4ee5\u51cf\u5c11 AI \u8c03\u7528\u6210\u672c\u3002",
-        "options_ai_summary_disclaimer": "\u98ce\u9669\u63d0\u793a\uff1a\u8fd9\u4e0d\u662f\u6295\u8d44\u5efa\u8bae\u3002",
-    },
-    "Espa\u00f1ol": {
-        "full_translation": "Traducci\u00f3n completa",
-        "chatgpt_detailed_summary": "Resumen detallado de ChatGPT",
-        "open_article": "Abrir art\u00edculo",
-        "trendforce_news_tab": "Noticias de TrendForce",
-        "trendforce_news": "Noticias de TrendForce",
-        "trendforce_news_caption": "Noticias de TrendForce sobre semiconductores y memoria.",
-        "no_trendforce_news": "Las noticias de TrendForce no tienen datos o a\u00fan no est\u00e1n configuradas.",
-        "watchlist_manager": "Lista de seguimiento",
-        "watchlist_input": "Introducir ticker",
-        "watchlist_add": "A\u00f1adir acci\u00f3n",
-        "watchlist_remove": "Eliminar acci\u00f3n",
-        "watchlist_current": "Lista actual",
-        "watchlist_ticker_exists": "La acci\u00f3n ya existe.",
-        "watchlist_added_success": "Acci\u00f3n a\u00f1adida correctamente.",
-        "watchlist_removed_success": "Acci\u00f3n eliminada correctamente.",
-        "watchlist_invalid_ticker": "Ticker no v\u00e1lido.",
-        "option_expiry": "Vencimiento de opciones",
-        "current_expiry": "Vencimiento actual",
-        "option_expirations_not_found": "No se encontraron vencimientos de opciones disponibles",
-        "option_open_interest_missing": "Este vencimiento no devolvi\u00f3 datos de inter\u00e9s abierto",
-        "option_gamma_missing": "La fuente de datos no devolvi\u00f3 gamma, por lo que no se puede calcular el GEX neto",
-        "option_call_put_empty": "Los datos call/put est\u00e1n vac\u00edos para este vencimiento",
-        "option_price_available_chain_unavailable": "El precio est\u00e1 disponible, pero la cadena de opciones no est\u00e1 disponible",
-        "options_ai_summary": "Resumen IA de Opciones",
-        "generate_options_ai_summary": "Generar Resumen IA de Opciones",
-        "options_ai_summary_idle": "Genere este resumen bajo demanda para limitar los costos de IA.",
-        "options_ai_summary_disclaimer": "Aviso de riesgo: esto no es asesoramiento financiero.",
-    },
-}
-
-
 def _translation_language_key(language):
     if language in TRANSLATIONS:
         return language
@@ -420,115 +331,6 @@ def _translation_language_key(language):
 
 for _language, _labels in NEWS_UI_TRANSLATION_OVERRIDES.items():
     TRANSLATIONS.setdefault(_translation_language_key(_language), {}).update(_labels)
-
-
-MACRO_TRANSLATION_OVERRIDES = {
-    "English": {
-        "macro_risk_score": "Macro risk score",
-        "us_treasury_yields": "US Treasury yields",
-        "fx_relative_performance": "FX relative performance",
-        "inflation_and_economy": "Inflation and economy",
-        "fed_indicator_explanation": "The Fed focuses most on PCE and Core PCE because they are closer to the official inflation framework behind the 2% target. CPI and Core CPI often move markets in the short term, but PCE carries more policy weight. Labor market data helps assess whether wage pressure and demand can keep inflation sticky.",
-        "fed_ranking": "Fed indicator ranking",
-        "why_it_matters": "Why it matters",
-        "fed_rank_core_pce": "Best read on underlying inflation in the Fed's preferred PCE framework.",
-        "fed_rank_pce": "Headline PCE is closest to the Fed's official 2% inflation target.",
-        "fed_rank_labor": "Shows whether wages and demand can keep inflation sticky.",
-        "fed_rank_core_cpi": "Market-moving inflation signal that strips out food and energy.",
-        "fed_rank_cpi": "High-frequency household inflation gauge, but less policy-weighted than PCE.",
-        "main_inflation_chart": "Main inflation chart",
-        "labor_market_chart": "Labor market chart",
-        "economy_chart": "Economy chart",
-        "economy_chart_explanation": "The economy chart tracks the broad growth trend of the US economy. GDP YoY Growth measures how much GDP has grown compared with the same quarter one year earlier. GDP is quarterly data, so it is useful for macro direction rather than short-term trading.",
-        "missing_macro_series": "Unavailable macro series: {series}",
-        "core_pce_yoy": "Core PCE YoY",
-        "pce_yoy": "PCE YoY",
-        "core_cpi_yoy": "Core CPI YoY",
-        "cpi_yoy": "CPI YoY",
-        "unemployment_rate": "Unemployment rate",
-        "wage_growth": "Wage growth",
-        "nonfarm_payrolls": "Nonfarm payrolls",
-        "job_openings": "Job openings",
-        "gdp_yoy_growth": "GDP YoY Growth",
-        "commodities_relative_performance": "Commodities relative performance",
-        "latest_macro_data": "Latest macro data",
-        "macro_series_unavailable": "Some macro series are unavailable.",
-        "chart_period": "Period",
-        "indicator": "Indicator",
-        "latest": "Latest",
-        "last_updated": "Last updated",
-    },
-    "\u4e2d\u6587": {
-        "macro_risk_score": "\u5b8f\u89c2\u98ce\u9669\u8bc4\u5206",
-        "us_treasury_yields": "\u7f8e\u503a\u6536\u76ca\u7387",
-        "fx_relative_performance": "\u6c47\u7387\u76f8\u5bf9\u8868\u73b0",
-        "inflation_and_economy": "\u901a\u80c0\u4e0e\u7ecf\u6d4e\u6570\u636e",
-        "fed_indicator_explanation": "\u7f8e\u8054\u50a8\u6700\u5173\u6ce8\u7684\u662f PCE \u548c\u6838\u5fc3 PCE\uff0c\u56e0\u4e3a\u5b83\u4eec\u66f4\u63a5\u8fd1\u7f8e\u8054\u50a8 2% \u901a\u80c0\u76ee\u6807\u7684\u5b98\u65b9\u8861\u91cf\u53e3\u5f84\u3002CPI \u548c\u6838\u5fc3 CPI \u5bf9\u5e02\u573a\u77ed\u671f\u53cd\u5e94\u66f4\u654f\u611f\uff0c\u4f46\u653f\u7b56\u6743\u91cd\u901a\u5e38\u4f4e\u4e8e PCE\u3002\u5c31\u4e1a\u5e02\u573a\u6570\u636e\u7528\u4e8e\u5224\u65ad\u901a\u80c0\u662f\u5426\u4f1a\u901a\u8fc7\u5de5\u8d44\u548c\u9700\u6c42\u7ee7\u7eed\u4fdd\u6301\u7c98\u6027\u3002",
-        "fed_ranking": "\u7f8e\u8054\u50a8\u6307\u6807\u6392\u540d",
-        "why_it_matters": "\u91cd\u8981\u6027",
-        "fed_rank_core_pce": "\u5728\u7f8e\u8054\u50a8\u504f\u597d\u7684 PCE \u6846\u67b6\u4e0b\u89c2\u5bdf\u5e95\u5c42\u901a\u80c0\u7684\u6700\u4f73\u6307\u6807\u3002",
-        "fed_rank_pce": "\u6574\u4f53 PCE \u6700\u63a5\u8fd1\u7f8e\u8054\u50a8 2% \u901a\u80c0\u76ee\u6807\u7684\u5b98\u65b9\u53e3\u5f84\u3002",
-        "fed_rank_labor": "\u663e\u793a\u5de5\u8d44\u548c\u9700\u6c42\u662f\u5426\u4f1a\u8ba9\u901a\u80c0\u7ee7\u7eed\u5177\u6709\u7c98\u6027\u3002",
-        "fed_rank_core_cpi": "\u5254\u9664\u98df\u54c1\u548c\u80fd\u6e90\u540e\u7684\u5e02\u573a\u654f\u611f\u578b\u901a\u80c0\u4fe1\u53f7\u3002",
-        "fed_rank_cpi": "\u9ad8\u9891\u5bb6\u5ead\u901a\u80c0\u6307\u6807\uff0c\u4f46\u653f\u7b56\u6743\u91cd\u4f4e\u4e8e PCE\u3002",
-        "main_inflation_chart": "\u4e3b\u8981\u901a\u80c0\u56fe\u8868",
-        "labor_market_chart": "\u52b3\u52a8\u529b\u5e02\u573a\u56fe\u8868",
-        "economy_chart": "\u7ecf\u6d4e\u56fe\u8868",
-        "economy_chart_explanation": "\u7ecf\u6d4e\u56fe\u8868\u4e3b\u8981\u7528\u4e8e\u89c2\u5bdf\u7f8e\u56fd\u7ecf\u6d4e\u589e\u957f\u8d8b\u52bf\u3002GDP \u540c\u6bd4\u589e\u957f\u8868\u793a\u5f53\u524d\u5b63\u5ea6 GDP \u76f8\u6bd4\u53bb\u5e74\u540c\u671f\u7684\u589e\u957f\u901f\u5ea6\u3002GDP \u662f\u5b63\u5ea6\u6570\u636e\uff0c\u9002\u5408\u5224\u65ad\u7ecf\u6d4e\u5927\u65b9\u5411\uff0c\u4e0d\u9002\u5408\u7528\u4e8e\u77ed\u7ebf\u4ea4\u6613\u3002\u5982\u679c GDP \u540c\u6bd4\u4e0a\u5347\uff0c\u8bf4\u660e\u7ecf\u6d4e\u589e\u957f\u8f83\u5f3a\uff1b\u5982\u679c\u6301\u7eed\u4e0b\u964d\uff0c\u8bf4\u660e\u7ecf\u6d4e\u653e\u7f13\u6216\u8870\u9000\u98ce\u9669\u4e0a\u5347\u3002",
-        "missing_macro_series": "\u4e0d\u53ef\u7528\u7684\u5b8f\u89c2\u5e8f\u5217\uff1a{series}",
-        "core_pce_yoy": "\u6838\u5fc3 PCE \u540c\u6bd4",
-        "pce_yoy": "PCE \u540c\u6bd4",
-        "core_cpi_yoy": "\u6838\u5fc3 CPI \u540c\u6bd4",
-        "cpi_yoy": "CPI \u540c\u6bd4",
-        "unemployment_rate": "\u5931\u4e1a\u7387",
-        "wage_growth": "\u5de5\u8d44\u589e\u901f",
-        "nonfarm_payrolls": "\u975e\u519c\u5c31\u4e1a",
-        "job_openings": "\u804c\u4f4d\u7a7a\u7f3a",
-        "gdp_yoy_growth": "GDP \u540c\u6bd4\u589e\u957f",
-        "commodities_relative_performance": "\u5927\u5b97\u5546\u54c1\u76f8\u5bf9\u8868\u73b0",
-        "latest_macro_data": "\u6700\u65b0\u5b8f\u89c2\u6570\u636e",
-        "macro_series_unavailable": "\u90e8\u5206\u5b8f\u89c2\u6570\u636e\u6682\u4e0d\u53ef\u7528\u3002",
-        "chart_period": "\u5468\u671f",
-        "indicator": "\u6307\u6807",
-        "latest": "\u6700\u65b0",
-        "last_updated": "\u6700\u540e\u66f4\u65b0",
-    },
-    "Espa\u00f1ol": {
-        "macro_risk_score": "Puntuaci\u00f3n de riesgo macro",
-        "us_treasury_yields": "Rendimientos del Tesoro de EE. UU.",
-        "fx_relative_performance": "Rendimiento relativo de divisas",
-        "inflation_and_economy": "Inflaci\u00f3n y econom\u00eda",
-        "fed_indicator_explanation": "La Fed se centra especialmente en el PCE y el PCE subyacente porque est\u00e1n m\u00e1s cerca del marco oficial de inflaci\u00f3n asociado al objetivo del 2%. El IPC y el IPC subyacente suelen mover el mercado a corto plazo, pero el PCE tiene m\u00e1s peso en pol\u00edtica monetaria. Los datos laborales ayudan a evaluar si los salarios y la demanda mantienen la inflaci\u00f3n persistente.",
-        "fed_ranking": "Clasificaci\u00f3n de indicadores de la Fed",
-        "why_it_matters": "Por qu\u00e9 importa",
-        "fed_rank_core_pce": "Mejor lectura de la inflaci\u00f3n subyacente en el marco PCE preferido por la Fed.",
-        "fed_rank_pce": "El PCE general es el m\u00e1s cercano al objetivo oficial de inflaci\u00f3n del 2% de la Fed.",
-        "fed_rank_labor": "Muestra si salarios y demanda pueden mantener persistente la inflaci\u00f3n.",
-        "fed_rank_core_cpi": "Se\u00f1al de inflaci\u00f3n que mueve el mercado y excluye alimentos y energ\u00eda.",
-        "fed_rank_cpi": "Indicador frecuente de inflaci\u00f3n de los hogares, pero con menor peso pol\u00edtico que el PCE.",
-        "main_inflation_chart": "Gr\u00e1fico principal de inflaci\u00f3n",
-        "labor_market_chart": "Gr\u00e1fico del mercado laboral",
-        "economy_chart": "Gr\u00e1fico de econom\u00eda",
-        "economy_chart_explanation": "El gr\u00e1fico econ\u00f3mico sigue la tendencia general de crecimiento de la econom\u00eda estadounidense. El crecimiento interanual del PIB mide cu\u00e1nto ha crecido el PIB frente al mismo trimestre del a\u00f1o anterior. El PIB es un dato trimestral, por lo que sirve para analizar la direcci\u00f3n macro, no para trading de corto plazo.",
-        "missing_macro_series": "Series macro no disponibles: {series}",
-        "core_pce_yoy": "PCE subyacente interanual",
-        "pce_yoy": "PCE interanual",
-        "core_cpi_yoy": "IPC subyacente interanual",
-        "cpi_yoy": "IPC interanual",
-        "unemployment_rate": "Tasa de desempleo",
-        "wage_growth": "Crecimiento salarial",
-        "nonfarm_payrolls": "N\u00f3minas no agr\u00edcolas",
-        "job_openings": "Vacantes laborales",
-        "gdp_yoy_growth": "Crecimiento interanual del PIB",
-        "commodities_relative_performance": "Rendimiento relativo de materias primas",
-        "latest_macro_data": "\u00daltimos datos macro",
-        "macro_series_unavailable": "Algunas series macro no est\u00e1n disponibles.",
-        "chart_period": "Periodo",
-        "indicator": "Indicador",
-        "latest": "\u00daltimo",
-        "last_updated": "\u00daltima actualizaci\u00f3n",
-    },
-}
 
 
 for _language, _labels in MACRO_TRANSLATION_OVERRIDES.items():
@@ -4573,15 +4375,6 @@ def render_daily_report(snapshots):
             st.write(response.choices[0].message.content)
         except Exception as exc:
             st.warning(f"{t('ai_summary_unavailable')}: {exc}")
-
-
-def _multi_agent_language(language):
-    language_text = str(language or "")
-    if language_text == "中文" or language_text.lower() in ("zh", "chinese"):
-        return "中文"
-    if language_text == "Español" or language_text.lower() in ("es", "spanish", "español") or language_text.startswith("Espa"):
-        return "Español"
-    return "English"
 
 
 def multi_agent_text(key, language=None):
