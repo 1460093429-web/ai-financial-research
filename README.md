@@ -42,7 +42,7 @@ ibkr_client.py                IBKR 只读连接与数据获取
 ibkr_statement_parser.py      IBKR CSV 报表标准化
 what_if_analysis.py           持仓和交易 What-if 计算
 tests/                        当前 Dashboard 相关模块测试
-ai_research_project/tests/    历史目录中的测试；裸导入目标见结构文档
+ai_research_project/tests/    独立旧版或并行实现的测试
 ai_research_project/          保留的旧版或独立实现，不应直接删除
 .github/workflows/            定时监控与研究任务
 AGENTS.md                     工程、数据和测试约束
@@ -127,7 +127,7 @@ pytest -q ai_research_project/tests
 pytest -q
 ```
 
-先运行与修改模块直接相关的测试，再运行完整测试。`ai_research_project/tests/` 当前使用裸导入；从仓库根运行时，其中多个测试实际解析到根目录同名模块，详情及后续修复方案见 `PROJECT_STRUCTURE.md`。
+先运行与修改模块直接相关的测试，再运行完整测试。`ai_research_project/tests/` 当前实际覆盖 `ai_research_project/` 下的独立旧版或并行实现。不要将这些测试机械移动到根 `tests/`：移动会使其改为导入根目录模块，而两套实现的 API 不兼容。验证过程和模块对应关系见 `TEST_STRUCTURE_PLAN.md` 与 `PROJECT_STRUCTURE.md`。
 
 ## 多语言
 

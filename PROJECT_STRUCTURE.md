@@ -81,9 +81,9 @@ Status definitions:
 | Module | Status | Observed consumer |
 | --- | --- | --- |
 | `dashboard.py` | Current production call | Local Streamlit command; Cloud console value 待确认 |
-| `config.py` | Current production call; test call | Dashboard modules and other root scripts; `ai_research_project/tests/test_config.py` resolves here from repository root |
-| `financials.py` | Current production call; test call | `dashboard.py`, `macro_data.py`, report/agent scripts; child test suite resolves here |
-| `macro_data.py` | Current production call; test call | `dashboard.py`; child test suite resolves here |
+| `config.py` | Current production call | Dashboard modules and other root scripts; the subtree config test does not cover this file |
+| `financials.py` | Current production call | `dashboard.py`, `macro_data.py`, report/agent scripts; the subtree financial test does not cover this file |
+| `macro_data.py` | Current production call | `dashboard.py`; the subtree macro test does not cover this file |
 | `etf_news_monitor.py` | Current production call; test call | `dashboard.py`, `tests/test_etf_news_monitor.py` |
 | `factor_watch.py` | Current production call; test call | `dashboard.py`, `tests/test_factor_watch.py` |
 | `option_walls.py` | Current production call; test call | `dashboard.py`, `options_levels.py`, `tests/test_option_walls.py` |
@@ -101,15 +101,15 @@ The subtree is not a conventional installed Python package at its root (there is
 | Subtree module | Root counterpart/function | Status and finding |
 | --- | --- | --- |
 | `app.py` | `dashboard.py` / `main.py` entry roles | Deprecated/retained example candidate; prints one Yahoo price and is not on Dashboard path |
-| `config.py` | `config.py` | Duplicate/older variant; not imported by Dashboard; direct standalone subtree use 待确认 |
-| `financials.py` | `financials.py` | Duplicate/older, much smaller variant; direct standalone subtree use 待确认 |
-| `macro_data.py` | `macro_data.py` | Duplicate/older, smaller variant; direct standalone subtree use 待确认 |
-| `backtest.py` | `backtest.py` | Divergent implementations; subtree version is much larger; production/manual owner 待确认 |
+| `config.py` | `config.py` | Independent legacy/parallel variant; covered by `ai_research_project/tests/test_config.py`; runtime owner beyond tests 待确认 |
+| `financials.py` | `financials.py` | Independent legacy/parallel, smaller variant; covered by `ai_research_project/tests/test_financials.py`; runtime owner beyond tests 待确认 |
+| `macro_data.py` | `macro_data.py` | Independent legacy/parallel, smaller variant; covered by `ai_research_project/tests/test_macro_data.py`; runtime owner beyond tests 待确认 |
+| `backtest.py` | `backtest.py` | Divergent, larger subtree implementation; covered by `ai_research_project/tests/test_backtest.py`; production/manual owner 待确认 |
 | `ai_analysis.py` | `ai_analysis.py` | Divergent implementations; subtree version is smaller; manual use 待确认 |
 | `supply_chain_analyzer.py` | `supply_chain_analyzer.py` | Divergent implementations; subtree version is larger; manual use 待确认 |
 | `data/yahoo_client.py` | Yahoo logic in several root modules | Called only by subtree `app.py` in the observed static graph |
 | `options.py`, `data_layer.py`, analyst and DRAM/backtest scripts | Related root functionality, no exact one-to-one module | Unknown; not on observed Dashboard import path |
-| `tests/` | Root `tests/` | Active collected tests, but bare imports resolve to root counterparts when pytest runs from repository root |
+| `tests/` | Root `tests/` | Active collected tests for the subtree's backtest, config, financial, and macro implementations |
 
 No duplicate or older implementation should be deleted until its invocation environment, data files, and downstream users are confirmed.
 
@@ -120,7 +120,9 @@ Two test directories are collected:
 - `tests/`: ETF news, factor watch, IBKR client/parser, option walls, and What-if tests.
 - `ai_research_project/tests/`: backtest, config, financial, and macro tests.
 
-From the repository root, the child suite's `import backtest`, `import config`, `import financials`, and `import macro_data` resolve to root files. This behavior is sensitive to launch directory/import mode and should eventually be made explicit, but changing it could alter the tested implementations and is outside this low-risk documentation task.
+Instrumented pytest collection confirmed that the child suite's `import backtest`, `import config`, `import financials`, and `import macro_data` resolve to files under `ai_research_project/`, including when pytest is launched from the repository root. These are independent legacy/parallel implementations with their own active regression coverage.
+
+A reversible experiment moved the four tests into root `tests/`. The move changed their imports to root modules and produced 17 failure items because the root and subtree APIs are incompatible. The files were restored. They must not be moved directly unless a future approved deprecation or restructuring of `ai_research_project/` includes an explicit test migration.
 
 Standard commands:
 
@@ -142,4 +144,4 @@ pytest -q
 - Confirm the Streamlit Cloud Main file path is exactly `dashboard.py`.
 - Confirm whether `main.py` and `ai_research_project/app.py` are still used manually.
 - Confirm owners/consumers of divergent subtree backtest, analyst, DRAM, and supply-chain scripts.
-- Decide in a separately tested migration whether child tests should explicitly target root modules or package-scoped subtree modules.
+- Decide whether `ai_research_project/` remains a supported parallel application or becomes deprecated; retain its current tests until that decision and any migration are explicitly approved.
