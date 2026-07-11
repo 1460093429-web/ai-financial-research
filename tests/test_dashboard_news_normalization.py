@@ -20,10 +20,36 @@ def test_dashboard_reexports_yahoo_news_normalization_helpers():
         assert getattr(dashboard, name) is getattr(news_normalization, name)
 
 
+def test_dashboard_reexports_trendforce_news_normalization_helpers():
+    from services import news_normalization
+
+    helper_names = (
+        "_match_trendforce_ticker",
+        "_clean_trendforce_text",
+        "_extract_trendforce_date",
+        "_is_trendforce_article_url",
+        "_extract_trendforce_category",
+        "_build_trendforce_item",
+    )
+    for name in helper_names:
+        assert getattr(dashboard, name) is getattr(news_normalization, name)
+
+
 def test_yahoo_news_normalization_helper_signatures_are_characterized():
     assert str(inspect.signature(dashboard._format_yfinance_datetime)) == "(value)"
     assert str(inspect.signature(dashboard._extract_yfinance_url)) == "(item, content)"
     assert str(inspect.signature(dashboard._normalize_yfinance_news_item)) == "(item, ticker)"
+
+
+def test_trendforce_news_normalization_helper_signatures_are_characterized():
+    assert str(inspect.signature(dashboard._match_trendforce_ticker)) == "(title, summary)"
+    assert str(inspect.signature(dashboard._clean_trendforce_text)) == "(value)"
+    assert str(inspect.signature(dashboard._extract_trendforce_date)) == "(text)"
+    assert str(inspect.signature(dashboard._is_trendforce_article_url)) == "(url)"
+    assert str(inspect.signature(dashboard._extract_trendforce_category)) == "(text)"
+    assert str(inspect.signature(dashboard._build_trendforce_item)) == (
+        "(title, url, published_date='', category='', summary='')"
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -31,6 +57,7 @@ def forbid_external_access(monkeypatch):
     monkeypatch.setattr(dashboard.requests, "get", lambda *args, **kwargs: pytest.fail("requests must not run"))
     monkeypatch.setattr(dashboard.yf, "Ticker", lambda *args, **kwargs: pytest.fail("yfinance must not run"))
     monkeypatch.setattr(dashboard, "get_openai_client", lambda: pytest.fail("OpenAI must not run"))
+    monkeypatch.setattr(dashboard.feedparser, "parse", lambda *args, **kwargs: pytest.fail("feedparser must not run"))
 
 
 def test_yahoo_news_normalization_preserves_nested_field_priority_and_source():

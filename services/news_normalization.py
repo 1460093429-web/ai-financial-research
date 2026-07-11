@@ -1,6 +1,8 @@
 """Pure normalization helpers for already-retrieved Yahoo news items."""
 
 from datetime import datetime
+import html
+import re
 
 
 def _format_yfinance_datetime(value):
@@ -48,4 +50,86 @@ def _normalize_yfinance_news_item(item, ticker):
         "source": "Yahoo/yfinance",
         "ticker": ticker,
         "related_tickers": ", ".join(dict.fromkeys(related_tickers)),
+    }
+
+
+def _match_trendforce_ticker(title, summary):
+    text = f"{title or ''} {summary or ''}".lower()
+    keyword_map = (
+        ("MU", ("micron", "\u7f8e\u5149", "dram", "hbm", "nand", "\u5b58\u50a8\u5668", "\u8bb0\u5fc6\u4f53", "\u5185\u5b58")),
+        ("SNDK", ("sandisk", "\u95ea\u8fea", "nand", "flash", "ssd", "\u95ea\u5b58")),
+        ("NVDA", ("nvidia", "\u82f1\u4f1f\u8fbe", "gpu", "ai\u670d\u52a1\u5668", "ai server", "\u52a0\u901f\u5668")),
+        ("TSM", ("tsmc", "\u53f0\u79ef\u7535", "\u6676\u5706\u4ee3\u5de5", "\u5148\u8fdb\u5236\u7a0b", "wafer", "foundry")),
+        ("LITE", ("lumentum", "\u5149\u6a21\u5757", "\u5149\u901a\u4fe1", "\u5149\u6536\u53d1\u5668", "\u5149\u5b66", "photonics", "transceiver")),
+        ("RKLB", ("\u536b\u661f", "\u592a\u7a7a", "\u706b\u7bad", "satellite", "space", "rocket")),
+    )
+    for ticker, keywords in keyword_map:
+        if any(keyword.lower() in text for keyword in keywords):
+            return ticker
+    return "SEMI"
+
+
+def _clean_trendforce_text(value):
+    value = html.unescape(str(value or ""))
+    value = re.sub(r"(?is)<[^>]+>", " ", value)
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def _extract_trendforce_date(text):
+    text = _clean_trendforce_text(text)
+    match = re.search(r"(20\d{2})[-/.年](\d{1,2})[-/.月](\d{1,2})日?", text)
+    if match:
+        year, month, day = match.groups()
+        return f"{int(year):04d}-{int(month):02d}-{int(day):02d}"
+    match = re.search(
+        r"(\d{1,2})\s+"
+        r"(January|February|March|April|May|June|July|August|September|October|November|December)"
+        r"\s+(20\d{2})",
+        text,
+        re.IGNORECASE,
+    )
+    if not match:
+        return ""
+    day, month_name, year = match.groups()
+    month = {
+        "january": 1, "february": 2, "march": 3, "april": 4, "may": 5, "june": 6,
+        "july": 7, "august": 8, "september": 9, "october": 10, "november": 11, "december": 12,
+    }[month_name.lower()]
+    return f"{int(year):04d}-{int(month):02d}-{int(day):02d}"
+
+
+def _is_trendforce_article_url(url):
+    return re.search(r"/presscenter/news/\d{8}-\d+\.html", url or "", re.IGNORECASE) is not None
+
+
+def _extract_trendforce_category(text):
+    text = _clean_trendforce_text(text)
+    for category in ("\u534a\u5bfc\u4f53", "\u65b0\u5174\u79d1\u6280", "Semiconductors", "Emerging Technologies"):
+        if category in text:
+            return category
+    return "\u4ea7\u4e1a\u6d1e\u5bdf"
+
+
+def _build_trendforce_item(title, url, published_date="", category="", summary=""):
+    title = _clean_trendforce_text(title)
+    summary = _clean_trendforce_text(summary) or title
+    if not title or not url:
+        return None
+    ticker = _match_trendforce_ticker(title, summary)
+    return {
+        "title": title,
+        "publishedDate": published_date or "",
+        "published_date": published_date or "",
+        "category": category or "\u4ea7\u4e1a\u6d1e\u5bdf",
+        "site": "TrendForce",
+        "source": "TrendForce",
+        "publisher": "TrendForce\u96c6\u90a6\u54a8\u8be2",
+        "ticker": ticker,
+        "related_ticker": ticker,
+        "related_tickers": ticker,
+        "summary": summary,
+        "text": summary,
+        "url": url,
+        "sentiment": "\u4e2d\u6027",
+        "credibility": "TrendForce",
     }
