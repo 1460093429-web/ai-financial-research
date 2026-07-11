@@ -21,6 +21,19 @@ import streamlit as st
 import yfinance as yf
 
 from config import CACHE_DIR, get_fmp_api_key, get_openai_client
+from dashboard_support.company import (
+    COMPANY_NAMES,
+    SUPPLY_CHAIN_ROLES,
+    company_name,
+    normalize_ticker,
+    supply_chain_role,
+)
+from dashboard_support.formatting import (
+    card_number as _card_number,
+    format_money,
+    format_percent,
+    format_ratio,
+)
 from etf_news_monitor import (
     ETF_COM_BLOCKED_MESSAGE,
     ETF_COM_DAILY_FLOWS_URL,
@@ -35,6 +48,7 @@ from factor_watch import render_factor_watch_section
 from financials import fetch_company_news, fetch_general_news, fetch_historical_prices, get_company_snapshot as get_fmp_company_snapshot
 from macro_data import build_macro_snapshot, fetch_indicator, fetch_macro_calendar, fetch_market_series, fetch_treasury_rates
 from option_walls import compute_option_walls
+from translations.multi_agent import MULTI_AGENT_TEXTS
 
 
 YFINANCE_CACHE_DIR = CACHE_DIR / "yfinance"
@@ -50,20 +64,6 @@ US_MARKET_VALUATION_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__
 US_MARKET_VALUATION_TTL_SECONDS = 7 * 24 * 60 * 60
 NASDAQ100_FORWARD_PE_COLUMN = "Nasdaq-100 Forward P/E"
 FORWARD_EARNINGS_YIELD_COLUMN = "Forward Earnings Yield %"
-COMPANY_NAMES = {
-    "NVDA": "NVIDIA",
-    "MU": "Micron",
-    "SNDK": "SanDisk",
-    "LITE": "Lumentum",
-    "RKLB": "Rocket Lab",
-}
-SUPPLY_CHAIN_ROLES = {
-    "NVDA": "AI accelerators and compute platform",
-    "MU": "HBM and memory",
-    "SNDK": "Flash storage",
-    "LITE": "Optical networking components",
-    "RKLB": "Space systems and launch services",
-}
 EARNINGS_DATES = {
     "NVDA": "2026-08-26",
     "MU": "2026-07-01",
@@ -114,10 +114,6 @@ def render_debug_panel():
             st.write("Section load times:")
             for section, elapsed in sections.items():
                 st.write(f"- {section}: {elapsed:.2f}s")
-
-
-def normalize_ticker(ticker):
-    return re.sub(r"\s+", "", str(ticker or "")).upper()
 
 
 def load_watchlist():
@@ -176,14 +172,6 @@ def remove_ticker_from_watchlist(ticker):
     return True, "watchlist_removed_success", symbol
 
 
-def company_name(ticker, snapshot=None):
-    if snapshot and snapshot.get("name"):
-        return snapshot["name"]
-    return COMPANY_NAMES.get(ticker, ticker)
-
-
-def supply_chain_role(ticker):
-    return SUPPLY_CHAIN_ROLES.get(ticker, "Dynamic watchlist stock")
 POSITIVE_NEWS_KEYWORDS = (
     "beat", "raise", "growth", "demand", "upgrade", "strong", "record",
     "expansion", "partnership",
@@ -552,39 +540,6 @@ DEFAULT_LANGUAGE = "中文"
 def t(key):
     language = st.session_state.get("language", DEFAULT_LANGUAGE)
     return TRANSLATIONS.get(language, TRANSLATIONS["English"]).get(key, TRANSLATIONS["English"].get(key, key))
-
-
-def format_money(value, decimals=1):
-    if value is None or pd.isna(value):
-        return "N/A"
-    value = float(value)
-    for divisor, suffix in ((1e12, "T"), (1e9, "B"), (1e6, "M")):
-        if abs(value) >= divisor:
-            return f"${value / divisor:,.{decimals}f}{suffix}"
-    return f"${value:,.{decimals}f}"
-
-
-def format_ratio(value):
-    return "N/A" if value is None or pd.isna(value) else f"{float(value):,.2f}"
-
-
-def format_percent(value):
-    return "N/A" if value is None or pd.isna(value) else f"{float(value) * 100:,.1f}%"
-
-
-def _card_number(value):
-    if value is None:
-        return None
-    try:
-        if pd.isna(value):
-            return None
-    except (TypeError, ValueError):
-        return None
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return None
-    return number if np.isfinite(number) else None
 
 
 def calculate_rsi(data, window=14):
@@ -4618,91 +4573,6 @@ def render_daily_report(snapshots):
             st.write(response.choices[0].message.content)
         except Exception as exc:
             st.warning(f"{t('ai_summary_unavailable')}: {exc}")
-
-
-MULTI_AGENT_TEXTS = {
-    "English": {
-        "caption": "Run the five-agent workflow for one selected ticker.",
-        "select_ticker": "Select ticker for multi-agent analysis",
-        "run_button": "Run Multi-Agent Analysis",
-        "running": "Running research agents for",
-        "no_analysis": "No multi-agent analysis available for this ticker yet.",
-        "final_conclusion": "Final Summary",
-        "final_summary": "Final Summary",
-        "overall_rating": "Overall Rating",
-        "key_risk": "Key Risk",
-        "key_opportunity": "Key Opportunity",
-        "suggested_action": "Suggested Action",
-        "key_levels": "Key Levels",
-        "risk_management": "Risk Management",
-        "agent_details": "Agent Details",
-        "technical_analysis": "Technical Analysis",
-        "options_analysis": "Options Analysis",
-        "sentiment_analysis": "Sentiment Analysis",
-        "fundamental_analysis": "Fundamental Analysis",
-        "missing_data": "Missing Data",
-        "fallback_validation_note": "OpenAI returned a result, but it did not pass quality checks. A rule-based fallback summary is shown.",
-        "fallback_error_note": "OpenAI failed. A rule-based fallback summary is shown.",
-        "neutral_rating": "NEUTRAL",
-        "unavailable": "Unavailable",
-        "hold": "Wait for clearer data before taking action.",
-        "mixed_setup": "The setup is mixed based on currently available data.",
-    },
-    "中文": {
-        "caption": "为一个选定股票运行五智能体分析流程。",
-        "select_ticker": "选择要进行多智能体分析的股票",
-        "run_button": "运行该股票多智能体分析",
-        "running": "正在运行研究智能体：",
-        "no_analysis": "当前股票暂无多智能体分析结果。",
-        "final_conclusion": "最终总结",
-        "final_summary": "最终总结",
-        "overall_rating": "综合评级",
-        "key_risk": "主要风险",
-        "key_opportunity": "主要机会",
-        "suggested_action": "建议操作",
-        "key_levels": "关键价位",
-        "risk_management": "风险管理",
-        "agent_details": "智能体详情",
-        "technical_analysis": "技术分析",
-        "options_analysis": "期权分析",
-        "sentiment_analysis": "情绪分析",
-        "fundamental_analysis": "基本面分析",
-        "missing_data": "缺失数据",
-        "fallback_validation_note": "OpenAI 已返回结果，但未通过质量检查，已显示基于规则的备用摘要。",
-        "fallback_error_note": "OpenAI 调用失败，已显示基于规则的备用摘要。",
-        "neutral_rating": "中性",
-        "unavailable": "不可用",
-        "hold": "等待更清晰的数据后再采取行动。",
-        "mixed_setup": "根据当前可用数据，整体形势较为混合。",
-    },
-    "Español": {
-        "caption": "Ejecute el flujo de cinco agentes para un ticker seleccionado.",
-        "select_ticker": "Seleccionar ticker para análisis multiagente",
-        "run_button": "Ejecutar análisis multiagente",
-        "running": "Ejecutando agentes de análisis para",
-        "no_analysis": "No hay análisis multiagente disponible para este ticker.",
-        "final_conclusion": "Resumen final",
-        "final_summary": "Resumen final",
-        "overall_rating": "Calificación general",
-        "key_risk": "Riesgo principal",
-        "key_opportunity": "Oportunidad principal",
-        "suggested_action": "Acción sugerida",
-        "key_levels": "Niveles clave",
-        "risk_management": "Gestión del riesgo",
-        "agent_details": "Detalles de los agentes",
-        "technical_analysis": "Análisis técnico",
-        "options_analysis": "Análisis de opciones",
-        "sentiment_analysis": "Análisis de sentimiento",
-        "fundamental_analysis": "Análisis fundamental",
-        "missing_data": "Datos faltantes",
-        "fallback_validation_note": "OpenAI devolvió un resultado, pero no superó los controles de calidad. Se muestra un resumen basado en reglas.",
-        "fallback_error_note": "OpenAI falló. Se muestra un resumen basado en reglas.",
-        "neutral_rating": "NEUTRAL",
-        "unavailable": "No disponible",
-        "hold": "Esperar datos más claros antes de actuar.",
-        "mixed_setup": "La configuración es mixta según los datos disponibles.",
-    },
-}
 
 
 def _multi_agent_language(language):

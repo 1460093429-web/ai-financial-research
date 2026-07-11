@@ -59,3 +59,16 @@ def test_translation_language_key_preserves_supported_canonical_names():
     assert dashboard._translation_language_key("English") == "English"
     assert dashboard._translation_language_key("中文") == "中文"
     assert dashboard._translation_language_key("Español") == "Español"
+
+
+def test_multi_agent_translation_keys_and_dashboard_reexport_are_stable():
+    from translations.multi_agent import MULTI_AGENT_TEXTS
+
+    assert dashboard.MULTI_AGENT_TEXTS is MULTI_AGENT_TEXTS
+    english_keys = set(MULTI_AGENT_TEXTS["English"])
+    assert set(MULTI_AGENT_TEXTS) == {"English", "中文", "Español"}
+    assert set(MULTI_AGENT_TEXTS["中文"]) == english_keys
+    assert set(MULTI_AGENT_TEXTS["Español"]) == english_keys
+    assert dashboard.multi_agent_text("caption", language="English") == MULTI_AGENT_TEXTS["English"]["caption"]
+    assert dashboard.multi_agent_text("caption", language="中文") == MULTI_AGENT_TEXTS["中文"]["caption"]
+    assert dashboard.multi_agent_text("caption", language="Español") == MULTI_AGENT_TEXTS["Español"]["caption"]
