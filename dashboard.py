@@ -59,6 +59,8 @@ from services.news_normalization import (
     _is_trendforce_article_url,
     _match_trendforce_ticker,
     _normalize_yfinance_news_item,
+    _trendforce_items_from_regex,
+    _trendforce_items_from_soup,
 )
 from translations.core import TRANSLATIONS
 from translations.macro import MACRO_TRANSLATION_OVERRIDES
@@ -2503,92 +2505,6 @@ def get_cached_watchlist_yahoo_news(tickers, limit_per_ticker=10):
     return news
 
 
-def _trendforce_items_from_soup(page_html, base_url, homepage=False):
-    try:
-        from bs4 import BeautifulSoup
-    except Exception:
-        return None
-
-    soup = BeautifulSoup(page_html, "html.parser")
-    roots = []
-    if homepage:
-        for heading in soup.find_all(["h2", "h3"], string=re.compile(r"\u4ea7\u4e1a\u6d1e\u5bdf")):
-            node = heading.parent
-            while node and getattr(node, "name", None) not in ("body", "html"):
-                article_links = [
-                    link for link in node.find_all("a", href=True)
-                    if _is_trendforce_article_url(urljoin(base_url, link.get("href")))
-                ]
-                if len(article_links) >= 3:
-                    roots = [node]
-                    break
-                node = node.parent
-            if roots:
-                break
-    if not roots:
-        roots = [soup]
-
-    items = []
-    seen = set()
-    for root in roots:
-        for link in root.find_all("a", href=True):
-            title = _clean_trendforce_text(link.get("title") or link.get_text(" ", strip=True))
-            href = link.get("href")
-            url = urljoin(base_url, href)
-            if not _is_trendforce_article_url(url):
-                continue
-            if not title or len(title) < 8:
-                continue
-            if "trendforce." not in url.lower() and href.startswith(("http://", "https://")):
-                continue
-            if not re.search(r"/presscenter|/news|/article|/insight|NewsID=|id=", url, re.IGNORECASE):
-                if not re.search(r"TrendForce|集邦|DRAM|HBM|NAND|半导体|晶圆|存储|记忆体|内存|AI", title, re.IGNORECASE):
-                    continue
-            nearby = ""
-            parent = link
-            for _ in range(3):
-                parent = getattr(parent, "parent", None)
-                if not parent:
-                    break
-                nearby = _clean_trendforce_text(parent.get_text(" ", strip=True))
-                if len(nearby) > len(title) + 10:
-                    break
-            published_date = _extract_trendforce_date(nearby)
-            category = _extract_trendforce_category(nearby)
-            summary = nearby.replace(title, " ", 1).strip()
-            summary = re.sub(r"^\W*\d{4}[-/.年]\d{1,2}[-/.月]\d{1,2}日?\W*", "", summary).strip()
-            item = _build_trendforce_item(title, url, published_date, category, summary or title)
-            if item and item["url"] not in seen:
-                seen.add(item["url"])
-                items.append(item)
-    return items
-
-
-def _trendforce_items_from_regex(page_html, base_url):
-    cleaned_html = re.sub(r"(?is)<(script|style|noscript|svg).*?</\1>", " ", page_html or "")
-    anchors = re.findall(r"(?is)<a\b([^>]*?)href=[\"']([^\"']+)[\"']([^>]*)>(.*?)</a>", cleaned_html)
-    items = []
-    seen = set()
-    for before, href, after, body in anchors:
-        attrs = f"{before} {after}"
-        title_match = re.search(r"title=[\"']([^\"']+)[\"']", attrs, re.IGNORECASE)
-        title = _clean_trendforce_text(title_match.group(1) if title_match else body)
-        url = urljoin(base_url, href)
-        if not _is_trendforce_article_url(url):
-            continue
-        if not title or len(title) < 8:
-            continue
-        if not re.search(r"/presscenter|/news|/article|/insight|NewsID=|id=", url, re.IGNORECASE):
-            if not re.search(r"TrendForce|集邦|DRAM|HBM|NAND|半导体|晶圆|存储|记忆体|内存|AI", title, re.IGNORECASE):
-                continue
-        anchor_start = cleaned_html.find(href)
-        nearby = cleaned_html[max(0, anchor_start - 300):anchor_start + 800] if anchor_start >= 0 else body
-        published_date = _extract_trendforce_date(nearby)
-        item = _build_trendforce_item(title, url, published_date, _extract_trendforce_category(nearby), title)
-        if item and item["url"] not in seen:
-            seen.add(item["url"])
-            items.append(item)
-    return items
 
 
 def get_trendforce_news(limit=20):

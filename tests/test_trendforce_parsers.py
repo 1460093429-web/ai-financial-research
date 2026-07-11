@@ -1,4 +1,5 @@
 import builtins
+import inspect
 
 import pytest
 
@@ -7,6 +8,20 @@ from conftest import import_root_dashboard
 
 dashboard = import_root_dashboard()
 BASE_URL = "https://www.trendforce.com"
+
+
+def test_dashboard_reexports_trendforce_parser_helpers():
+    from services import news_normalization
+
+    assert dashboard._trendforce_items_from_soup is news_normalization._trendforce_items_from_soup
+    assert dashboard._trendforce_items_from_regex is news_normalization._trendforce_items_from_regex
+
+
+def test_trendforce_parser_signatures_are_characterized():
+    assert str(inspect.signature(dashboard._trendforce_items_from_soup)) == (
+        "(page_html, base_url, homepage=False)"
+    )
+    assert str(inspect.signature(dashboard._trendforce_items_from_regex)) == "(page_html, base_url)"
 
 
 @pytest.fixture(autouse=True)
