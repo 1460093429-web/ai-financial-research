@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Iterable
 from urllib.parse import urljoin
 
@@ -574,5 +574,5 @@ def build_etf_flow_news_digest(articles: list[dict], watchlist: Iterable[str] | 
         "watchlist_hit_count": sum(item.get("signals", {}).get("watchlist_hit_count", 0) for item in enriched),
         "has_real_data": bool(real_data_articles or all_inflows or all_outflows),
         "provider_status": {"ok": not warnings, "warnings": sorted(set(filter(None, warnings)))},
-        "generated_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
     }
