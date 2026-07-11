@@ -83,3 +83,48 @@ def test_multi_agent_language_aliases_and_fallback_are_unchanged():
     assert dashboard._multi_agent_language("Español") == "Español"
     assert dashboard._multi_agent_language("unsupported") == "English"
     assert dashboard._multi_agent_language(None) == "English"
+
+
+def test_news_static_resources_are_reexported_without_behavior_changes():
+    from translations import news
+
+    resource_names = (
+        "NEWS_SUMMARY_LABELS",
+        "NEWS_TRANSLATION_LABELS",
+        "NEWS_TRANSLATION_UI",
+        "NEWS_DETAILED_SUMMARY_LABELS",
+        "NEWS_DETAILED_SUMMARY_UI",
+        "NEWS_DETAILED_SUMMARY_UNAVAILABLE",
+        "NEWS_SCORE_LABELS",
+        "NEWS_SUMMARY_LANGUAGE_NAMES",
+        "NEWS_SUMMARY_LANGUAGE_ALIASES",
+        "NEWS_SUMMARY_FIELD_LABELS",
+        "NEWS_SUMMARY_UI",
+        "NEWS_DRIVER_KEYWORDS",
+    )
+    for name in resource_names:
+        assert getattr(dashboard, name) is getattr(news, name)
+
+    assert set(news.NEWS_SUMMARY_LABELS) == {"English", "中文", "Español"}
+    assert set(news.NEWS_SUMMARY_FIELD_LABELS["English"]) == set(news.NEWS_SUMMARY_FIELD_LABELS["中文"])
+    assert set(news.NEWS_SUMMARY_FIELD_LABELS["English"]) == set(news.NEWS_SUMMARY_FIELD_LABELS["Español"])
+    assert dashboard._news_summary_language("zh") == "中文"
+    assert dashboard._news_summary_language("Spanish") == "Español"
+    assert dashboard._news_summary_language("unsupported") == "English"
+
+
+def test_news_versions_and_driver_keywords_are_unchanged():
+    from translations import news
+
+    assert news.AI_SUMMARY_VERSION == "v3"
+    assert news.AI_TRANSLATION_VERSION == "v1"
+    assert news.AI_SENTIMENT_VERSION == "v1"
+    assert news.AI_DETAILED_SUMMARY_VERSION == "v2"
+    assert dict(news.NEWS_DRIVER_KEYWORDS)["earnings"] == (
+        "earnings",
+        "revenue",
+        "profit",
+        "eps",
+        "guidance",
+        "margin",
+    )
