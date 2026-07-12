@@ -124,3 +124,17 @@ def normalize_news_items(items: list[dict], provider: str | None = None) -> list
     if not isinstance(items, (list, tuple)):
         return []
     return [normalize_news_item(item, provider=provider) for item in items]
+
+
+def attach_normalized_news_item(item: dict, provider: str | None = None) -> dict:
+    """Return a new legacy envelope with a freshly generated normalized view."""
+    legacy = dict(item) if isinstance(item, dict) else {}
+    legacy["_normalized"] = normalize_news_item(item, provider=provider)
+    return legacy
+
+
+def attach_normalized_news_items(items: list[dict], provider: str | None = None) -> list[dict]:
+    """Attach normalized views in order; unsupported containers return empty."""
+    if not isinstance(items, (list, tuple)):
+        return []
+    return [attach_normalized_news_item(item, provider=provider) for item in items]

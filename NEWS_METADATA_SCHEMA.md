@@ -101,6 +101,13 @@ Phase 2.11 adds inactive pure adapters in `services/news_schema.py`:
 
 They are not called by providers, Dashboard caches, aggregation, or UI code. The adapter returns a new 17-key dictionary, converts related ticker strings/sequences to an ordered deduplicated uppercase list, copies publication fields without guessing timezones, and never invents retrieval time. A legacy `source="yfinance fallback"` is mapped to explicit Yahoo/FMP fallback metadata. Non-dict single items produce a complete empty schema; unsupported collection containers produce an empty list.
 
+Phase 2.13 adds inactive parallel-envelope helpers:
+
+- `attach_normalized_news_item(item, provider=None)`
+- `attach_normalized_news_items(items, provider=None)`
+
+For dict input, every legacy field is shallow-copied into a new dict and `_normalized` is always overwritten with a freshly generated schema view. Overwriting prevents a stale or externally supplied `_normalized` value from being treated as current. Non-dict single input produces an envelope containing only `_normalized`; list/tuple batches preserve every position, including non-dict entries. Unsupported batch containers return an empty list. These helpers are not connected to production providers, caches, aggregation, or UI.
+
 1. Keep the pure adapter functions alongside characterization fixtures; do not call them from production yet.
 2. Test adapters against captured current Yahoo, TrendForce, FMP-success, and FMP-fallback items.
 3. Preserve legacy fields temporarily through an explicit compatibility view if a consumer needs them.
