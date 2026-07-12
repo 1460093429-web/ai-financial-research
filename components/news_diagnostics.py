@@ -79,3 +79,18 @@ def render_news_schema_diagnostics(envelopes):
     """Render caller-supplied diagnostics without fetching or modifying news."""
     rows = build_news_schema_diagnostics_rows(envelopes)
     st.dataframe(rows, use_container_width=True, hide_index=True)
+
+
+def render_news_schema_diagnostics_if_enabled(
+    envelopes,
+    *,
+    enabled=False,
+    language="zh",
+):
+    """Render diagnostics only after an explicit caller-controlled opt-in."""
+    if not enabled:
+        return None
+    # Reserved for a future diagnostics-only translation layer. It intentionally
+    # does not read Dashboard language or session state.
+    _ = language
+    return render_news_schema_diagnostics(envelopes)

@@ -80,3 +80,7 @@ Keep the adapter disconnected from production for one more step. Add a pure para
 ## Phase 2.14 diagnostics
 
 `components/news_diagnostics.py` provides an inactive diagnostics surface with a pure row builder and a thin Streamlit renderer. It compares legacy source, publisher, summary/date/related-ticker fields with the `_normalized` view and exposes explicit match flags. Missing or partial schemas are displayed safely. The component accepts only caller-supplied envelopes and is not imported by Dashboard, providers, caches, aggregation, routing, or existing news pages.
+
+## Phase 2.15 development gate
+
+`dashboard_support/dev_mode.py` defines a caller-supplied, default-off diagnostics gate. An explicit `config["enable_news_diagnostics"]` value is authoritative; when that key is absent, only a passed `env["ENABLE_NEWS_DIAGNOSTICS"]` value of `1` or `true` enables diagnostics. The helper never reads the process environment, Streamlit secrets, or session state. The diagnostics component also exposes an opt-in wrapper that returns before processing envelopes or calling Streamlit when disabled. Neither helper is imported by Dashboard or connected to production routing.
