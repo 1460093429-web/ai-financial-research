@@ -84,3 +84,7 @@ Keep the adapter disconnected from production for one more step. Add a pure para
 ## Phase 2.15 development gate
 
 `dashboard_support/dev_mode.py` defines a caller-supplied, default-off diagnostics gate. An explicit `config["enable_news_diagnostics"]` value is authoritative; when that key is absent, only a passed `env["ENABLE_NEWS_DIAGNOSTICS"]` value of `1` or `true` enables diagnostics. The helper never reads the process environment, Streamlit secrets, or session state. The diagnostics component also exposes an opt-in wrapper that returns before processing envelopes or calling Streamlit when disabled. Neither helper is imported by Dashboard or connected to production routing.
+
+## Phase 2.16 static mock demo
+
+`components/news_diagnostics_demo.py` supplies fresh, static development fixtures for Yahoo, TrendForce, FMP, FMP-to-yfinance fallback, missing-schema, and partial-schema diagnostics. Its renderer is default-off and returns before constructing fixtures; explicit enablement delegates only to the existing gated diagnostics renderer. The module does not read environment configuration or call providers, caches, OpenAI, network services, or file I/O, and it remains disconnected from Dashboard, sidebar, routing, and production news pages.
