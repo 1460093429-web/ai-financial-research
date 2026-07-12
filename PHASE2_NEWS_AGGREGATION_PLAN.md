@@ -76,3 +76,7 @@ The legacy fields remain authoritative for existing pages. New diagnostics or a 
 ## Phase 2.13 recommendation
 
 Keep the adapter disconnected from production for one more step. Add a pure parallel-envelope helper and tests using captured Yahoo, TrendForce, FMP, and fallback fixtures, but do not call it from existing pages or cached wrappers. Only after equivalence tests confirm legacy rendering inputs should a new diagnostic component optionally consume the normalized view.
+
+## Phase 2.14 diagnostics
+
+`components/news_diagnostics.py` provides an inactive diagnostics surface with a pure row builder and a thin Streamlit renderer. It compares legacy source, publisher, summary/date/related-ticker fields with the `_normalized` view and exposes explicit match flags. Missing or partial schemas are displayed safely. The component accepts only caller-supplied envelopes and is not imported by Dashboard, providers, caches, aggregation, routing, or existing news pages.
