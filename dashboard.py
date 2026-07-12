@@ -50,6 +50,7 @@ from financials import fetch_company_news, fetch_general_news, fetch_historical_
 from macro_data import build_macro_snapshot, fetch_indicator, fetch_macro_calendar, fetch_market_series, fetch_treasury_rates
 from option_walls import compute_option_walls
 from providers.trendforce import get_trendforce_news as _provider_get_trendforce_news
+from providers.yahoo_news import fetch_yahoo_news as _provider_fetch_yahoo_news
 from services.news_normalization import (
     _build_trendforce_item,
     _clean_trendforce_text,
@@ -2470,28 +2471,7 @@ def get_cached_market_news(limit=150):
 def get_cached_yahoo_news(ticker, limit=10):
     track_cacheable_call()
     track_api_call("yfinance_news")
-    ticker = ticker.upper()
-    stock = yf.Ticker(ticker)
-    raw_news = []
-    try:
-        raw_news = stock.get_news(count=limit) or []
-    except TypeError:
-        raw_news = stock.get_news() or []
-    except Exception:
-        raw_news = stock.news or []
-    if not raw_news:
-        try:
-            raw_news = stock.news or []
-        except Exception:
-            raw_news = []
-    normalized = []
-    for item in raw_news:
-        normalized_item = _normalize_yfinance_news_item(item, ticker)
-        if normalized_item:
-            normalized.append(normalized_item)
-        if len(normalized) >= limit:
-            break
-    return normalized
+    return _provider_fetch_yahoo_news(ticker, limit)
 
 
 @st.cache_data(ttl=1800)

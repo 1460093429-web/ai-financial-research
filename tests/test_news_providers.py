@@ -1,4 +1,6 @@
 import builtins
+import ast
+import inspect
 
 import pytest
 
@@ -7,6 +9,7 @@ from conftest import import_root_dashboard
 
 dashboard = import_root_dashboard()
 import financials
+from providers import yahoo_news as yahoo_news_provider
 
 
 class YahooStock:
@@ -69,6 +72,59 @@ def yahoo_item(title, timestamp="2026-07-13T00:00:00Z"):
             "provider": {"displayName": "Yahoo Publisher"},
         }
     }
+
+
+def test_yahoo_provider_and_dashboard_cached_wrapper_signatures_are_characterized():
+    assert str(inspect.signature(yahoo_news_provider.fetch_yahoo_news)) == "(ticker, limit=10)"
+    assert str(inspect.signature(dashboard.get_cached_yahoo_news)) == "(ticker, limit=10)"
+
+
+def test_yahoo_provider_does_not_import_dashboard():
+    tree = ast.parse(inspect.getsource(yahoo_news_provider))
+    imported_roots = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported_roots.update(alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imported_roots.add(node.module.split(".")[0])
+    assert "dashboard" not in imported_roots
+
+
+def test_yahoo_cached_wrapper_delegates_after_debug_counters(monkeypatch):
+    events = []
+    expected = [{"title": "provider result", "source": "Yahoo/yfinance"}]
+    monkeypatch.setattr(dashboard, "track_cacheable_call", lambda: events.append("cacheable"))
+    monkeypatch.setattr(dashboard, "track_api_call", lambda name: events.append(name))
+    monkeypatch.setattr(
+        dashboard,
+        "_provider_fetch_yahoo_news",
+        lambda ticker, limit: events.append((ticker, limit)) or expected,
+    )
+
+    assert dashboard.get_cached_yahoo_news("nvda", 3) == expected
+    assert events == ["cacheable", "yfinance_news", ("nvda", 3)]
+
+
+def test_yahoo_provider_type_error_retries_get_news_without_arguments(monkeypatch):
+    class TypeErrorStock:
+        news = []
+
+        def __init__(self):
+            self.calls = []
+
+        def get_news(self, *args, **kwargs):
+            self.calls.append((args, kwargs))
+            if kwargs:
+                raise TypeError("count unsupported")
+            return [yahoo_item("retry")]
+
+    stock = TypeErrorStock()
+    monkeypatch.setattr(yahoo_news_provider.yf, "Ticker", lambda ticker: stock)
+
+    result = yahoo_news_provider.fetch_yahoo_news("mu", 2)
+
+    assert [item["title"] for item in result] == ["retry"]
+    assert stock.calls == [((), {"count": 2}), ((), {})]
 
 
 def test_yahoo_cached_provider_normalizes_ticker_limit_source_and_counters(monkeypatch):
