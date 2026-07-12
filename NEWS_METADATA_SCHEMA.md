@@ -94,7 +94,14 @@ This mapping is a proposal for a future adapter and is not current runtime behav
 
 ## Adapter rollout plan
 
-1. Add pure adapter functions alongside characterization fixtures; do not call them from production.
+Phase 2.11 adds inactive pure adapters in `services/news_schema.py`:
+
+- `normalize_news_item(item, provider=None)`
+- `normalize_news_items(items, provider=None)`
+
+They are not called by providers, Dashboard caches, aggregation, or UI code. The adapter returns a new 17-key dictionary, converts related ticker strings/sequences to an ordered deduplicated uppercase list, copies publication fields without guessing timezones, and never invents retrieval time. A legacy `source="yfinance fallback"` is mapped to explicit Yahoo/FMP fallback metadata. Non-dict single items produce a complete empty schema; unsupported collection containers produce an empty list.
+
+1. Keep the pure adapter functions alongside characterization fixtures; do not call them from production yet.
 2. Test adapters against captured current Yahoo, TrendForce, FMP-success, and FMP-fallback items.
 3. Preserve legacy fields temporarily through an explicit compatibility view if a consumer needs them.
 4. Introduce adapters at one aggregation boundary, without changing provider requests or cache ownership.
