@@ -382,22 +382,79 @@ wide but synthetic panel:
 7. Methodology footer: source classification, stale thresholds, fallback rules,
    and last retrieval details. No numeric cycle score in the first version.
 
-## 14. Phase 4.1 recommended scope
+## 14. Phase 4.1 injected metric adapters
 
-Phase 4.1 should remain a data-layer task:
+Phase 4.1 implements a data-layer-only boundary in
+`services/memory_cycle_adapters.py`. It accepts observations that a caller has
+already obtained and returns the existing 15-field contract; it does not fetch,
+cache, score, chart, or render anything.
 
-- add pure, injected-input adapters that convert **already fetched** MU/SNDK
-  financial fields, selected equity/ETF observations, and cited news directions
-  into the Phase 4.0 metric contract;
-- add fixtures and characterization tests for field-level source, fiscal period,
-  units/currency, missing values, stale observations, and fallbacks;
-- return explicit unavailable records for all unsupported metrics and companies;
-- require explicit per-field source and fiscal-period metadata instead of
-  guessing it from the current mixed snapshot;
-- inject a deterministic `evaluated_at` into stale/status helpers while
-  preserving the original `retrieved_at`;
-- do not add a page, route, provider, scraper, licensed-price assumption, cache,
-  cycle score, or changes to current financial/news behavior.
+### Company financial observations
 
-Only after those adapters are independently verified should a later phase add a
-small three-language read-only component behind an explicit non-production gate.
+- `adapt_company_financial_metric` currently accepts explicitly identified MU
+  and SNDK observations.
+- The caller must provide the metric ID, label, finite numeric value, unit,
+  fiscal period (`annual` or `quarterly`), observation/retrieval/evaluation
+  times, named source, source field, frequency, and either a source document or
+  provenance description. Monetary values additionally require currency when
+  the caller explicitly sets `currency_required=true`.
+- Fiscal period, unit, currency, field identity, and source are never inferred
+  from the ticker, metric name, or current date. Zero is retained; booleans,
+  blank strings, NaN, infinity, absent metadata, and naive timestamps produce a
+  `missing` record with `value=null`.
+- The contract has no separate fiscal-period, currency, source-field, or
+  provenance fields. These explicit inputs are therefore retained in `notes`
+  rather than adding a second schema.
+- Metrics classified E by the Phase 4.0 audit stay `unavailable` even if a
+  caller supplies a value. Enabling inventory, inventory days, CapEx, or FCF
+  requires a separate source-audit/contract change; the adapter cannot bypass
+  the registry.
+
+### Market proxies
+
+- `adapt_market_proxy_metric` emits `source_type=proxy` and
+  `is_estimate=true`, requires an explicit method, and states that the value is
+  market performance rather than a direct memory price, inventory, supply,
+  demand, company fundamental, or cycle-phase observation.
+- Missing timestamps return `missing`. Requested high confidence is capped at
+  medium; a rising equity or ETF value never creates a DRAM/NAND/HBM or cycle
+  conclusion.
+
+### Cited news signals
+
+- `adapt_news_signal_metric` accepts only the contract's canonical qualitative
+  vocabulary and always emits `unit=null`.
+- A named independent source, citation, method, and explicit timestamps are
+  required. Output notes contain both `Citation:` and `Method:` markers.
+- Daily Brief is an aggregation boundary, not an independent fact source; it
+  cannot be supplied as the source. Precise numbers, percentages, unknown
+  labels, and uncited assertions become `missing`, never invented values.
+- An explicit `unavailable` input produces the same unavailable contract used
+  for audited source gaps.
+
+### Unavailable, time, and batch behavior
+
+- `build_unavailable_metric` always returns `value=null`,
+  `source=unavailable`, `status=unavailable`, `confidence=low`, and
+  `is_fallback=false`, using the audited source type/frequency where one exists.
+- Observation, retrieval, and evaluation times remain separate. `evaluated_at`
+  is mandatory for usable observations and no hidden current time is read.
+  Date-only values are supported; timestamps containing a time must be
+  timezone-aware. The Phase 4.0 stale thresholds are reused unchanged, and a
+  fallback flag never resets observation age.
+- `adapt_memory_cycle_metrics` accepts ordered list/tuple call specifications,
+  preserves order, does not mutate inputs, and replaces an invalid element with
+  an explicit unavailable placeholder. It performs no I/O.
+
+The adapters are deliberately not connected to `dashboard.py`, providers,
+Streamlit cache/session state, the sidebar, or any production data path.
+
+## 15. Phase 4.2 recommended scope
+
+Use static, reviewed fixtures to build a pure Memory Cycle MVP view model from
+these records. The view model should group contract records, expose data-quality
+counts and explanatory labels, and preserve all source/time/fallback metadata.
+It should not fetch data, add a production page, compute a score, infer a cycle
+phase, or turn unavailable metrics into synthetic observations. Three-language
+UI integration remains a later, separately approved step after the static view
+model is characterized.
