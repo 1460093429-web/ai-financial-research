@@ -3618,7 +3618,7 @@ def render_news_daily_brief_section():
         return
     if result:
         st.session_state[refresh_key] = st.session_state.get(refresh_key, 0) + 1
-    candidates = select_daily_brief_news(collect_daily_brief_news(), max_items=8)
+    candidates = select_daily_brief_news(collect_daily_brief_news(), max_items=40)
     fingerprint = daily_brief_fingerprint(candidates)
     candidate_json = json.dumps(candidates, ensure_ascii=False, sort_keys=True)
     st.session_state[state_key] = get_cached_news_daily_brief(

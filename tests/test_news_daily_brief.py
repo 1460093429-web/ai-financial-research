@@ -1,6 +1,6 @@
 import builtins
 from copy import deepcopy
-from datetime import datetime, timezone
+import json
 
 import pytest
 
@@ -10,160 +10,356 @@ from services.news_daily_brief import (
     deduplicate_daily_brief_news,
     filter_technology_semiconductor_news,
     generate_daily_brief,
+    group_daily_brief_events,
     normalize_daily_brief_candidates,
     rank_daily_brief_news,
     select_daily_brief_news,
-    validate_daily_brief_text,
+    validate_daily_brief_response,
 )
 from services.news_schema import attach_normalized_news_item
 
 
 @pytest.fixture(autouse=True)
 def forbid_external_access(monkeypatch):
+    import openai
     import requests
     import yfinance
 
     monkeypatch.setattr(requests, "get", lambda *args, **kwargs: pytest.fail("requests must not run"))
     monkeypatch.setattr(yfinance, "Ticker", lambda *args, **kwargs: pytest.fail("yfinance must not run"))
+    monkeypatch.setattr(openai, "OpenAI", lambda *args, **kwargs: pytest.fail("OpenAI must not run"))
     monkeypatch.setattr(builtins, "open", lambda *args, **kwargs: pytest.fail("file I/O must not run"))
 
 
-def legacy_item(title, *, source="FMP", url=None, ticker="NVDA", date="2026-07-13T01:00:00Z", text=None):
+def legacy_item(
+    title,
+    *,
+    text,
+    source="FMP",
+    url=None,
+    ticker=None,
+    related_tickers=None,
+    date="2026-07-13T01:00:00Z",
+):
     return {
         "title": title,
-        "text": text or f"{title} discusses semiconductor demand and data center capex.",
+        "text": text,
         "url": url,
         "source": source,
         "publisher": f"{source} Publisher",
         "ticker": ticker,
-        "related_tickers": ticker,
+        "related_tickers": related_tickers if related_tickers is not None else ticker,
         "published_date": date,
     }
 
 
-@pytest.mark.parametrize("source", ["Yahoo/yfinance", "TrendForce", "FMP"])
-def test_legacy_provider_items_normalize_to_candidates(source):
-    candidate = normalize_daily_brief_candidates([legacy_item("AI chip demand", source=source)])[0]
+def distinct_events(count=10):
+    definitions = [
+        ("TSMC foundry earnings guidance", "TSMC revenue and advanced foundry demand guidance rose.", "TSM"),
+        ("Nvidia launches new GPU", "Nvidia launched a GPU for artificial intelligence data centers.", "NVDA"),
+        ("Micron expands HBM supply", "Micron HBM supply and capacity expansion responds to demand.", "MU"),
+        ("SanDisk sees NAND pricing shift", "SanDisk NAND pricing reflects tighter memory supply.", "SNDK"),
+        ("Microsoft raises AI data center capex", "Microsoft increased AI data center capital expenditure.", "MSFT"),
+        ("Meta expands AI accelerator investment", "Meta expanded ASIC accelerator investment and capacity.", "META"),
+        ("ASML reports lithography orders", "ASML lithography equipment orders changed its guidance.", "ASML"),
+        ("Applied Materials deposition demand", "Applied Materials sees semiconductor deposition equipment demand.", "AMAT"),
+        ("AMD signs ASIC partnership", "AMD announced an ASIC partnership and product launch.", "AMD"),
+        ("Intel expands foundry capacity", "Intel expanded foundry wafer capacity for new orders.", "INTC"),
+        ("Broadcom AI chip revenue", "Broadcom AI chip revenue guidance reflects accelerator demand.", "AVGO"),
+        ("Amazon increases cloud AI investment", "Amazon AWS increased cloud AI capex investment.", "AMZN"),
+    ]
+    sources = ["FMP", "Yahoo/yfinance", "TrendForce"]
+    return [
+        legacy_item(
+            title,
+            text=text,
+            source=sources[index % len(sources)],
+            url=f"https://example.com/event-{index}",
+            ticker=ticker,
+            date=f"2026-07-13T{index:02d}:00:00Z",
+        )
+        for index, (title, text, ticker) in enumerate(definitions[:count])
+    ]
 
-    assert candidate["title"] == "AI chip demand"
+
+def structured_response(candidates, count):
+    items = []
+    for index, candidate in enumerate(candidates[:count]):
+        ticker = (candidate.get("related_tickers") or [None])[0]
+        items.append({
+            "title": f"Event highlight {index + 1}: {candidate['title']}",
+            "summary": (
+                f"{candidate['summary']} This distinct event affects its specific technology value chain; "
+                f"the main open question is whether the reported change can be executed as described."
+            ),
+            "kind": "company" if ticker else "event",
+            "primary_ticker": ticker,
+            "related_tickers": [ticker] if ticker else [],
+            "source_article_indices": [index],
+            "risk": "Execution remains the main risk.",
+        })
+    return json.dumps({"items": items})
+
+
+@pytest.mark.parametrize("source", ["Yahoo/yfinance", "TrendForce", "FMP"])
+def test_legacy_provider_items_normalize_with_verified_tickers(source):
+    item = legacy_item(
+        "Nvidia GPU demand",
+        text="Nvidia data center GPU and semiconductor demand increased.",
+        source=source,
+        ticker="NVDA",
+    )
+
+    candidate = normalize_daily_brief_candidates([item])[0]
+
     assert candidate["source"] == source
-    assert candidate["published_at"] == "2026-07-13T01:00:00Z"
+    assert candidate["ticker"] == "NVDA"
     assert candidate["related_tickers"] == ["NVDA"]
 
 
-def test_unified_envelope_view_is_read_without_mutating_input():
-    envelope = attach_normalized_news_item(
-        legacy_item("HBM capacity", source="Yahoo/yfinance"), provider="yahoo"
-    )
-    envelope["_normalized"]["summary"] = "Normalized HBM summary"
+def test_envelope_is_supported_without_mutating_input():
+    raw = distinct_events(1)[0]
+    envelope = attach_normalized_news_item(raw, provider="fmp")
     before = deepcopy(envelope)
 
     candidate = normalize_daily_brief_candidates([envelope])[0]
 
-    assert candidate["summary"] == "Normalized HBM summary"
+    assert candidate["title"] == raw["title"]
     assert envelope == before
 
 
-def test_technology_filter_keeps_relevant_and_removes_unrelated_news():
-    items = [
-        legacy_item("GPU and advanced packaging expansion"),
-        legacy_item("Local sports result", text="A team won a routine match.", ticker="SPORT"),
-    ]
+def test_embedded_string_related_tickers_are_not_split_into_characters():
+    raw = distinct_events(1)[0]
+    envelope = attach_normalized_news_item(raw, provider="fmp")
+    envelope["_normalized"]["related_tickers"] = "TSM, NVDA"
+    envelope["_normalized"]["summary"] += " Nvidia demand supports TSMC."
 
-    assert [item["title"] for item in filter_technology_semiconductor_news(items)] == [
-        "GPU and advanced packaging expansion"
-    ]
+    candidate = normalize_daily_brief_candidates([envelope])[0]
 
-
-def test_deduplication_uses_url_then_title_fallback_in_input_order():
-    items = [
-        legacy_item("First chip story", url="https://example.com/same"),
-        legacy_item("Second chip story", url="https://example.com/same"),
-        legacy_item("Repeated HBM Update", url=None),
-        legacy_item("Repeated HBM update!", url=None),
-    ]
-
-    assert [item["title"] for item in deduplicate_daily_brief_news(items)] == [
-        "First chip story", "Repeated HBM Update"
-    ]
+    assert candidate["related_tickers"] == ["TSM", "NVDA"]
 
 
-def test_ranking_is_predictable_and_invalid_time_does_not_crash():
-    now = datetime(2026, 7, 13, 12, tzinfo=timezone.utc)
-    items = [
-        legacy_item("Old semiconductor note", date="invalid"),
-        legacy_item("Fresh GPU order demand and capex", date="2026-07-13T11:00:00Z"),
-    ]
-
-    ranked = rank_daily_brief_news(items, now=now)
-
-    assert [item["title"] for item in ranked] == [
-        "Fresh GPU order demand and capex", "Old semiconductor note"
-    ]
-
-
-def test_selection_is_bounded_and_keeps_source_diversity():
-    items = [
-        legacy_item("GPU order one", source="FMP", url="https://a/1"),
-        legacy_item("GPU order two", source="FMP", url="https://a/2"),
-        legacy_item("HBM capacity", source="TrendForce", url="https://b/1", ticker="MU"),
-        legacy_item("Cloud AI capex", source="Yahoo/yfinance", url="https://c/1"),
-    ]
-
-    selected = select_daily_brief_news(items, max_items=3, now="2026-07-13T12:00:00Z")
-
-    assert len(selected) == 3
-    assert {item["source"] for item in selected} == {"FMP", "TrendForce", "Yahoo/yfinance"}
-
-
-def test_fallback_item_is_identified_in_candidate():
-    item = legacy_item("AI chip fallback", source="yfinance fallback")
+def test_ticker_without_text_evidence_is_removed():
+    item = legacy_item(
+        "SpaceX launch schedule",
+        text="SpaceX discussed a rocket launch schedule.",
+        ticker="NVDA",
+    )
 
     candidate = normalize_daily_brief_candidates([item])[0]
 
-    assert candidate["is_fallback"] is True
-    assert candidate["fallback_from"] == "fmp"
+    assert candidate["ticker"] is None
+    assert candidate["related_tickers"] == []
 
 
-def test_prompt_requires_one_combined_summary_and_language_limits():
-    prompt = build_daily_brief_prompt([legacy_item("AI chip demand")], language="中文")
+def test_technology_filter_removes_unrelated_spacex_prediction_and_sports():
+    items = [
+        distinct_events(1)[0],
+        legacy_item(
+            "Prediction: SpaceX Shares Can Reach $220 by End of 2026",
+            text="A speculative share price prediction about SpaceX.",
+            ticker="NVDA",
+        ),
+        legacy_item("Local sports result", text="A team won a match.", ticker="NVDA"),
+    ]
 
-    assert "exactly one combined" in prompt
-    assert "Do not create market, provider, company, or ticker sections" in prompt
-    assert "180–260" in prompt
-    assert "最多约 320" in prompt
+    filtered = filter_technology_semiconductor_news(items)
+
+    assert [item["title"] for item in filtered] == ["TSMC foundry earnings guidance"]
+
+
+def test_speculative_space_news_with_injected_chip_ticker_is_filtered():
+    item = legacy_item(
+        "Goldman Sachs' Insane SpaceX AI Forecast Has One Clear Winner: Nvidia",
+        text="A speculative SpaceX AI forecast names Nvidia as a possible stock winner.",
+        source="Yahoo/yfinance",
+        ticker="NVDA",
+    )
+
+    assert filter_technology_semiconductor_news([item]) == []
+
+
+def test_stock_to_buy_comparison_without_factual_event_is_filtered():
+    item = legacy_item(
+        "Best AI Stock to Buy: Micron Stock vs. AMD Stock",
+        text="A comparison calls Micron and AMD attractive AI semiconductor stocks.",
+        source="Yahoo/yfinance",
+        ticker="MU",
+        related_tickers=["MU", "AMD"],
+    )
+
+    assert filter_technology_semiconductor_news([item]) == []
+
+
+def test_url_and_title_fallback_deduplication_preserve_first_item():
+    first = distinct_events(1)[0]
+    duplicate_url = {**first, "title": "Different TSMC foundry title"}
+    title_one = legacy_item("Repeated HBM supply", text="Micron HBM supply demand.", ticker="MU")
+    title_two = {**title_one, "title": "Repeated HBM supply!"}
+
+    result = deduplicate_daily_brief_news([first, duplicate_url, title_one, title_two])
+
+    assert [item["title"] for item in result] == [first["title"], title_one["title"]]
+
+
+def test_same_event_reporting_is_grouped_but_distinct_events_remain_separate():
+    duplicate_report = legacy_item(
+        "TSMC AI demand lifts foundry revenue",
+        text="TSMC earnings and revenue guidance cite advanced foundry demand.",
+        source="Yahoo/yfinance",
+        url="https://example.com/tsmc-confirmation",
+        ticker="TSM",
+    )
+    items = [distinct_events(2)[0], duplicate_report, distinct_events(2)[1]]
+
+    groups = group_daily_brief_events(items, now="2026-07-13T12:00:00Z")
+
+    assert len(groups) == 2
+    assert sorted(group["article_count"] for group in groups) == [1, 2]
+    merged = next(group for group in groups if group["article_count"] == 2)
+    assert set(merged["sources"]) == {"FMP", "Yahoo/yfinance"}
+
+
+def test_article_ranking_prioritizes_factual_events_over_price_predictions():
+    factual = distinct_events(1)[0]
+    prediction = legacy_item(
+        "Prediction: Nvidia stock price could reach a new target",
+        text="Nvidia semiconductor stock price prediction mentions AI chip demand.",
+        ticker="NVDA",
+    )
+
+    ranked = rank_daily_brief_news([prediction, factual], now="2026-07-13T12:00:00Z")
+
+    assert ranked[0]["title"] == factual["title"]
+
+
+def test_invalid_date_does_not_break_ranking_or_grouping():
+    items = distinct_events(3)
+    items[0]["published_date"] = "not-a-date"
+
+    ranked = rank_daily_brief_news(items, now="2026-07-13T12:00:00Z")
+    groups = group_daily_brief_events(items, now="2026-07-13T12:00:00Z")
+
+    assert len(ranked) == 3
+    assert len(groups) == 3
+
+
+def test_article_selection_limit_and_source_diversity_are_deterministic():
+    selected = select_daily_brief_news(distinct_events(12), max_items=6, now="2026-07-13T12:00:00Z")
+
+    assert len(selected) == 6
+    assert len({item["source"] for item in selected[:3]}) == 3
+    assert len(select_daily_brief_news(distinct_events(12), max_items=99)) <= 40
+
+
+def test_event_candidate_limit_is_at_most_eighteen():
+    many = distinct_events(12) + [
+        legacy_item(
+            f"Unique semiconductor equipment order {index}",
+            text=f"Unique supplier {index} reported lithography equipment orders and capacity.",
+            url=f"https://example.com/extra-{index}",
+        )
+        for index in range(12)
+    ]
+
+    assert len(group_daily_brief_events(many, max_events=18)) <= 18
+
+
+def test_prompt_requests_multiple_dynamic_json_items_and_language_limits():
+    prompt = build_daily_brief_prompt(distinct_events(10), language="中文")
+
+    assert '"items"' in prompt
+    assert "8–10 items" in prompt
+    assert "160–240" in prompt
+    assert "最多约 280" in prompt
+    assert "Do not organize" in prompt
+    assert "fixed Market, AI, Memory, NVDA, MU, AMD" in prompt
     assert "buy, or sell advice" in prompt
 
 
-def test_prompt_only_contains_required_candidate_fields():
-    item = {**legacy_item("AI chip demand"), "raw_html": "<html>not allowed</html>"}
+def test_prompt_excludes_full_html_and_truncates_article_summary():
+    item = {**distinct_events(1)[0], "text": "Nvidia GPU demand " + "x" * 1000, "raw_html": "<html>secret</html>"}
 
     prompt = build_daily_brief_prompt([item], language="English")
 
     assert "raw_html" not in prompt
-    assert "not allowed" not in prompt
+    assert "<html>secret</html>" not in prompt
+    assert "x" * 701 not in prompt
 
 
-def test_validation_handles_empty_text_and_rejects_ticker_sections():
-    assert validate_daily_brief_text(None) == ""
-    assert validate_daily_brief_text("  ") == ""
-    with pytest.raises(ValueError, match="combined industry summary"):
-        validate_daily_brief_text("NVDA: separate summary")
+def test_valid_json_is_parsed_and_server_derives_sources_and_article_count():
+    candidates = select_daily_brief_news(distinct_events(3), now="2026-07-13T12:00:00Z")
+    payload = json.loads(structured_response(candidates, 3))
+    payload["items"][0]["sources"] = ["invented"]
+    payload["items"][0]["article_count"] = 99
+
+    result = validate_daily_brief_response(json.dumps(payload), candidates, language="English")
+
+    assert len(result) == 3
+    assert result[0]["sources"] == [candidates[0]["source"]]
+    assert result[0]["article_count"] == 1
+    assert result[0]["kind"] in ("event", "company")
 
 
-def test_chinese_validation_caps_excessive_output():
-    result = validate_daily_brief_text("科" * 400, language="zh")
+@pytest.mark.parametrize("text", ["not json", "[]", '{"items": "wrong"}'])
+def test_malformed_json_contract_is_rejected(text):
+    with pytest.raises(ValueError):
+        validate_daily_brief_response(text, select_daily_brief_news(distinct_events(3)))
 
-    assert len(result) <= 321
-    assert result.endswith("。")
+
+def test_duplicate_response_items_are_rejected():
+    candidates = select_daily_brief_news(distinct_events(3))
+    payload = json.loads(structured_response(candidates, 3))
+    payload["items"][1]["title"] = payload["items"][0]["title"]
+
+    with pytest.raises(ValueError, match="duplicate"):
+        validate_daily_brief_response(json.dumps(payload), candidates)
 
 
-def test_empty_and_missing_key_results_do_not_call_openai():
+def test_near_duplicate_chinese_summaries_are_rejected():
+    candidates = select_daily_brief_news(distinct_events(3))
+    payload = json.loads(structured_response(candidates, 3))
+    payload["items"][0]["summary"] = "台积电先进制程需求持续增长，云厂商资本开支推动产能扩张，主要风险是订单兑现速度。"
+    payload["items"][1]["summary"] = "台积电先进制程需求持续增长，云厂商资本开支推动产能扩张，主要风险是订单兑现节奏。"
+
+    with pytest.raises(ValueError, match="duplicate"):
+        validate_daily_brief_response(json.dumps(payload, ensure_ascii=False), candidates)
+
+
+def test_more_than_ten_items_are_truncated():
+    candidates = select_daily_brief_news(distinct_events(12))
+
+    result = validate_daily_brief_response(structured_response(candidates, 12), candidates, language="English")
+
+    assert len(result) == 10
+
+
+def test_unsupported_ticker_and_invalid_article_index_are_rejected():
+    candidates = select_daily_brief_news(distinct_events(3))
+    payload = json.loads(structured_response(candidates, 3))
+    payload["items"][0]["primary_ticker"] = "FAKE"
+    payload["items"][0]["related_tickers"] = ["FAKE"]
+    with pytest.raises(ValueError, match="ticker absent"):
+        validate_daily_brief_response(json.dumps(payload), candidates)
+
+    payload = json.loads(structured_response(candidates, 3))
+    payload["items"][0]["source_article_indices"] = [999]
+    with pytest.raises(ValueError, match="invalid source article"):
+        validate_daily_brief_response(json.dumps(payload), candidates)
+
+
+def test_fewer_than_three_events_and_empty_input_do_not_call_openai():
     forbidden = lambda: pytest.fail("OpenAI must not run")
 
     assert generate_daily_brief([], client_factory=forbidden)["status"] == "empty"
-    result = generate_daily_brief([legacy_item("AI chip demand")], client_factory=None)
+    assert generate_daily_brief(distinct_events(2), client_factory=forbidden)["status"] == "empty"
+
+
+def test_missing_key_with_enough_events_does_not_call_openai():
+    result = generate_daily_brief(distinct_events(3), client_factory=None)
+
     assert result["status"] == "missing_key"
+    assert result["items"] == []
 
 
 class FakeCompletions:
@@ -187,43 +383,58 @@ def fake_client(completions):
     })()
 
 
-def test_generation_returns_structured_result_with_one_openai_call():
-    completions = FakeCompletions("AI chip demand and memory capacity remain the main drivers, while export controls are the principal risk.")
-    items = [legacy_item("GPU demand", source="Yahoo/yfinance")]
+def test_generation_returns_eight_distinct_items_with_one_openai_call():
+    raw = distinct_events(10)
+    candidates = select_daily_brief_news(raw, now="2026-07-13T12:00:00Z")
+    completions = FakeCompletions(structured_response(candidates, 8))
 
     result = generate_daily_brief(
-        items,
+        raw,
         language="English",
         client_factory=lambda: fake_client(completions),
         now="2026-07-13T12:00:00Z",
     )
 
     assert result["status"] == "ok"
-    assert result["articles_used"] == 1
-    assert result["sources_used"] == ["Yahoo/yfinance"]
-    assert result["generated_at"] == "2026-07-13T12:00:00+00:00"
+    assert len(result["items"]) == 8
+    assert len({item["title"] for item in result["items"]}) == 8
+    assert all(item["summary"] and item["kind"] and isinstance(item["related_tickers"], list) for item in result["items"])
     assert len(completions.calls) == 1
     assert completions.calls[0]["model"] == "gpt-4o-mini"
 
 
-def test_missing_key_and_openai_errors_are_safe_and_do_not_leak_secret():
-    item = legacy_item("AI chip demand")
-    missing = generate_daily_brief(
-        [item], client_factory=lambda: (_ for _ in ()).throw(ValueError("secret-key-value"))
+def test_generation_allows_five_high_quality_events_without_padding():
+    raw = distinct_events(5)
+    candidates = select_daily_brief_news(raw, now="2026-07-13T12:00:00Z")
+    completions = FakeCompletions(structured_response(candidates, 5))
+
+    result = generate_daily_brief(
+        raw,
+        client_factory=lambda: fake_client(completions),
+        now="2026-07-13T12:00:00Z",
     )
-    completions = FakeCompletions(error=RuntimeError("secret-key-value"))
-    failed = generate_daily_brief([item], client_factory=lambda: fake_client(completions))
 
-    assert missing["status"] == "missing_key"
-    assert missing["error"] is None
-    assert failed["status"] == "error"
-    assert "secret-key-value" not in failed["error"]
-    assert failed["candidate_titles"] == ["AI chip demand"]
+    assert result["status"] == "ok"
+    assert len(result["items"]) == 5
 
 
-def test_fingerprint_is_stable_and_changes_with_material_news_content():
-    item = legacy_item("AI chip demand")
+def test_openai_and_json_errors_are_safe_and_do_not_leak_secrets():
+    raw = distinct_events(3)
+    failed_client = FakeCompletions(error=RuntimeError("secret-key-value"))
+    malformed = FakeCompletions("not json")
 
-    assert daily_brief_fingerprint([item]) == daily_brief_fingerprint([deepcopy(item)])
-    changed = {**item, "text": "Changed semiconductor demand summary"}
-    assert daily_brief_fingerprint([item]) != daily_brief_fingerprint([changed])
+    request_error = generate_daily_brief(raw, client_factory=lambda: fake_client(failed_client))
+    json_error = generate_daily_brief(raw, client_factory=lambda: fake_client(malformed))
+
+    assert request_error["status"] == json_error["status"] == "error"
+    assert "secret-key-value" not in request_error["error"]
+    assert 3 <= len(request_error["candidate_titles"]) <= 5
+
+
+def test_fingerprint_is_stable_and_changes_with_material_content():
+    items = distinct_events(3)
+
+    assert daily_brief_fingerprint(items) == daily_brief_fingerprint(deepcopy(items))
+    changed = deepcopy(items)
+    changed[0]["text"] += " Material change."
+    assert daily_brief_fingerprint(items) != daily_brief_fingerprint(changed)
