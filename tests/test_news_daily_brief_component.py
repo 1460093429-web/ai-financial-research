@@ -24,6 +24,15 @@ LABELS = {
     "data_date": "Data date",
     "related_tickers": "Related tickers",
     "article_count": "Articles",
+    "why_important": "Why it matters",
+    "view_citations": "View cited news",
+    "citation_news": "Cited news",
+    "open_article": "Open article",
+    "fallback_data": "Fallback data",
+    "published_unknown": "Publication time unknown",
+    "source_unknown": "Source unknown",
+    "no_verified_citations": "No verifiable citations available",
+    "citation_incomplete": "Citation metadata is incomplete",
     "empty": "No important events",
     "missing_key": "Missing key",
     "error": "Generation failed",
@@ -67,22 +76,61 @@ def install_streamlit_spy(monkeypatch, *, clicked=False):
     monkeypatch.setattr(news_daily_brief.st, "info", lambda value: events.append(("info", value)))
     monkeypatch.setattr(
         news_daily_brief.st,
+        "expander",
+        lambda label, **kwargs: events.append(("expander", label, kwargs)) or Context(),
+    )
+    monkeypatch.setattr(
+        news_daily_brief.st,
+        "link_button",
+        lambda label, url, **kwargs: events.append(("link_button", label, url, kwargs)),
+    )
+    monkeypatch.setattr(
+        news_daily_brief.st,
         "button",
         lambda label, **kwargs: events.append(("button", label, kwargs)) or clicked,
     )
     return events
 
 
+def citation(
+    index,
+    *,
+    source="TrendForce",
+    publisher="TrendForce",
+    url=None,
+    published_at="2026-07-13T08:30:00+00:00",
+    is_fallback=False,
+):
+    return {
+        "title": f"Verified source article {index}",
+        "url": url if url is not None else f"https://example.com/article-{index}",
+        "source": source,
+        "publisher": publisher,
+        "published_at": published_at,
+        "ticker": "NVDA" if index == 1 else None,
+        "related_tickers": ["NVDA"] if index == 1 else [],
+        "is_fallback": is_fallback,
+    }
+
+
 def highlight(index):
+    citations = [citation(index)]
+    if index == 1:
+        citations = [
+            citation(1, source="FMP", publisher="Reuters"),
+            citation(11, source="Yahoo/yfinance", publisher="Bloomberg"),
+        ]
     return {
         "title": f"Distinct event {index}",
         "summary": f"Summary {index} explains what happened, its industry impact, and a principal risk.",
+        "importance_reason": f"Importance {index} explains the demand, supply, pricing, or capacity impact.",
         "kind": "company" if index % 2 else "event",
         "primary_ticker": "NVDA" if index == 1 else None,
         "related_tickers": ["NVDA"] if index == 1 else [],
         "sources": ["FMP", "Yahoo/yfinance"] if index == 1 else ["TrendForce"],
-        "article_count": 2 if index == 1 else 1,
+        "article_count": len(citations),
         "source_article_indices": [index - 1],
+        "citations": citations,
         "risk": "Execution risk",
     }
 
@@ -106,15 +154,28 @@ def test_ok_result_renders_multiple_numbered_event_cards_and_metadata(monkeypatc
     assert clicked is False
     assert [event for event in events if event[0] == "subheader"] == [("subheader", LABELS["title"])]
     assert len([event for event in events if event[0] == "container"]) == 3
-    assert [event[1] for event in events if event[0] == "markdown"] == [
+    assert [event[1] for event in events if event[0] == "markdown" and event[1].startswith("#### ")] == [
         "#### 1. Distinct event 1", "#### 2. Distinct event 2", "#### 3. Distinct event 3",
     ]
-    assert len([event for event in events if event[0] == "write"]) == 3
+    writes = [event[1] for event in events if event[0] == "write"]
+    assert writes[:2] == [
+        "Summary 1 explains what happened, its industry impact, and a principal risk.",
+        "Importance 1 explains the demand, supply, pricing, or capacity impact.",
+    ]
     captions = [event[1] for event in events if event[0] == "caption"]
     assert "Articles used: 4" in captions[0]
     assert "Related tickers: NVDA" in captions[1]
     assert "Sources: FMP, Yahoo/yfinance" in captions[1]
     assert "Articles: 2" in captions[1]
+    assert ("expander", "View cited news (2)", {"expanded": False}) in events
+    assert ("markdown", "**1. Verified source article 1**") in events
+    assert ("caption", "FMP / Reuters | 2026-07-13T08:30:00+00:00") in events
+    assert (
+        "link_button",
+        "Open article",
+        "https://example.com/article-1",
+        {"key": "daily_brief_citation_1_1"},
+    ) in events
 
 
 def test_component_renders_at_most_ten_cards(monkeypatch):
@@ -131,7 +192,11 @@ def test_component_does_not_create_fixed_market_or_ticker_sections(monkeypatch):
 
     render_news_daily_brief(result_with_items(4), labels=LABELS)
 
-    headings = [event[1] for event in events if event[0] == "markdown"]
+    headings = [
+        event[1]
+        for event in events
+        if event[0] == "markdown" and event[1].startswith("#### ")
+    ]
     assert all(heading not in ("Market", "NVDA", "MU", "AMD") for heading in headings)
     assert len(headings) == 4
 
@@ -142,6 +207,126 @@ def test_fewer_than_ten_items_render_safely(monkeypatch):
     render_news_daily_brief(result_with_items(5), labels=LABELS)
 
     assert len([event for event in events if event[0] == "container"]) == 5
+
+
+def test_each_card_renders_why_it_matters_and_an_expandable_citation_list(monkeypatch):
+    events = install_streamlit_spy(monkeypatch)
+
+    render_news_daily_brief(result_with_items(2), labels=LABELS, language="English")
+
+    importance_labels = [
+        event for event in events
+        if event == ("markdown", "**Why it matters:**")
+    ]
+    assert len(importance_labels) == 2
+    assert (
+        "write",
+        "Importance 1 explains the demand, supply, pricing, or capacity impact.",
+    ) in events
+    assert [event[1] for event in events if event[0] == "expander"] == [
+        "View cited news (2)",
+        "View cited news (1)",
+    ]
+    assert ("markdown", "**Cited news**") in events
+
+
+def test_citation_links_only_render_for_safe_http_urls(monkeypatch):
+    events = install_streamlit_spy(monkeypatch)
+    item = highlight(1)
+    citations = [
+        citation(1, url="https://example.com/safe"),
+        citation(2),
+        citation(3, url="javascript:alert(1)"),
+        citation(4, url="data:text/plain,unsafe"),
+        citation(5, url="file:///tmp/private"),
+    ]
+    citations[1]["url"] = None
+    item["citations"] = citations
+    item["article_count"] = len(citations)
+    result = result_with_items(1)
+    result["items"] = [item]
+
+    render_news_daily_brief(result, labels=LABELS, language="English")
+
+    links = [event for event in events if event[0] == "link_button"]
+    assert links == [
+        (
+            "link_button",
+            "Open article",
+            "https://example.com/safe",
+            {"key": "daily_brief_citation_1_1"},
+        )
+    ]
+    assert ("markdown", "**2. Verified source article 2**") in events
+    assert ("markdown", "**3. Verified source article 3**") in events
+    assert len([event for event in events if event == ("caption", LABELS["citation_incomplete"])]) == 3
+
+
+def test_component_caps_rendered_citations_at_four(monkeypatch):
+    events = install_streamlit_spy(monkeypatch)
+    item = highlight(1)
+    item["citations"] = [citation(index) for index in range(1, 6)]
+    item["article_count"] = 5
+    result = result_with_items(1)
+    result["items"] = [item]
+
+    render_news_daily_brief(result, labels=LABELS, language="English")
+
+    links = [event for event in events if event[0] == "link_button"]
+    assert len(links) == 4
+    assert ("expander", "View cited news (4)", {"expanded": False}) in events
+    assert any(
+        event[0] == "caption" and "Articles: 4" in event[1]
+        for event in events
+    )
+    assert not any(
+        event == ("markdown", "**5. Verified source article 5**")
+        for event in events
+    )
+
+
+def test_fallback_and_incomplete_citation_metadata_are_visible(monkeypatch):
+    events = install_streamlit_spy(monkeypatch)
+    item = highlight(1)
+    item["citations"] = [{
+        "title": "Fallback source article",
+        "url": None,
+        "source": None,
+        "publisher": None,
+        "published_at": None,
+        "ticker": "NVDA",
+        "related_tickers": ["NVDA"],
+        "is_fallback": True,
+    }]
+    item["article_count"] = 1
+    result = result_with_items(1)
+    result["items"] = [item]
+
+    render_news_daily_brief(result, labels=LABELS, language="English")
+
+    assert ("markdown", "**1. Fallback source article**") in events
+    assert ("caption", "Source unknown | Publication time unknown") in events
+    assert ("caption", "⚠️ Fallback data") in events
+    assert ("caption", "Citation metadata is incomplete") in events
+    assert not [event for event in events if event[0] == "link_button"]
+
+
+def test_missing_importance_and_citations_render_safe_fallbacks(monkeypatch):
+    events = install_streamlit_spy(monkeypatch)
+    item = highlight(1)
+    item.pop("importance_reason")
+    item.pop("citations")
+    item["article_count"] = 0
+    result = result_with_items(1)
+    result["items"] = [item]
+
+    render_news_daily_brief(result, labels=LABELS, language="English")
+
+    assert ("markdown", "**Why it matters:**") in events
+    assert ("caption", "Unavailable") in events
+    assert ("expander", "View cited news (0)", {"expanded": False}) in events
+    assert ("info", "No verifiable citations available") in events
+    assert not [event for event in events if event[0] == "link_button"]
 
 
 @pytest.mark.parametrize(
@@ -195,12 +380,50 @@ def test_component_does_not_mutate_result_or_labels(monkeypatch):
     assert LABELS == before_labels
 
 
-def test_all_three_languages_have_new_card_metadata_labels():
+def test_all_three_languages_have_evidence_and_importance_labels():
+    expected_keys = {
+        "why_important",
+        "view_citations",
+        "citation_news",
+        "open_article",
+        "fallback_data",
+        "published_unknown",
+        "source_unknown",
+        "no_verified_citations",
+        "citation_incomplete",
+    }
     for language in ("中文", "English", "Español"):
         labels = NEWS_DAILY_BRIEF_TEXT[language]
         assert labels["title"]
         assert labels["related_tickers"]
         assert labels["article_count"]
+        assert all(labels[key] for key in expected_keys)
+
+
+@pytest.mark.parametrize(
+    ("language", "importance_heading"),
+    [
+        ("中文", "**为什么重要：**"),
+        ("English", "**Why it matters:**"),
+        ("Español", "**Por qué importa:**"),
+    ],
+)
+def test_all_three_languages_render_evidence_controls(monkeypatch, language, importance_heading):
+    events = install_streamlit_spy(monkeypatch)
+    labels = NEWS_DAILY_BRIEF_TEXT[language]
+
+    render_news_daily_brief(result_with_items(1), labels=labels, language=language)
+
+    assert ("markdown", importance_heading) in events
+    assert (
+        "expander",
+        f"{labels['view_citations']} (2)",
+        {"expanded": False},
+    ) in events
+    assert any(
+        event[0] == "link_button" and event[1] == labels["open_article"]
+        for event in events
+    )
 
 
 def test_dashboard_collection_reuses_existing_cached_news_boundaries(monkeypatch):

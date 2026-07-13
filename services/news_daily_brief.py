@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import re
+from urllib.parse import urlsplit
 
 from services.news_schema import normalize_news_item
 
@@ -65,6 +66,13 @@ LOW_INFORMATION_PHRASES = (
     "stock could", "continue to soar", "better buy", "clear winner", "futures slump",
     "stocks slide", "shares slide", "shares surge", "buy this stock", "sell this stock",
     "stock to buy", "market is missing", "motley fool", "股价预测", "目标价",
+)
+
+IMPORTANCE_ADVICE_PHRASES = (
+    "recommend buying", "recommend selling", "buy this stock", "sell this stock",
+    "position size", "portfolio allocation", "price target", "建议买入", "建议卖出",
+    "仓位建议", "目标价", "recomienda comprar", "recomienda vender",
+    "objetivo de precio",
 )
 
 FACTUAL_EVENT_TERMS = {"earnings", "orders", "capex", "capacity", "regulation", "launch", "deal"}
@@ -329,6 +337,13 @@ def group_daily_brief_events(items, *, max_events=18, max_articles=40, now=None)
     """Group ranked articles into deterministic event candidates."""
     now_value = _parse_datetime(now) or datetime.now(timezone.utc)
     articles = select_daily_brief_news(items, max_items=max_articles, now=now_value)
+    return _group_selected_daily_brief_events(articles, max_events=max_events, now=now_value)
+
+
+def _group_selected_daily_brief_events(articles, *, max_events=18, now=None) -> list[dict]:
+    """Group an already selected article list without changing its index mapping."""
+    now_value = _parse_datetime(now) or datetime.now(timezone.utc)
+    articles = list(articles) if isinstance(articles, (list, tuple)) else []
     groups = []
     for article_index, article in enumerate(articles):
         target = next(
@@ -409,14 +424,24 @@ def build_daily_brief_prompt(items, *, language="zh") -> str:
     event_groups = items if items and isinstance(items[0], dict) and "articles" in items[0] else group_daily_brief_events(items)
     language_key = str(language or "zh").lower()
     if language_key in ("中文", "zh", "chinese"):
-        language_instruction = "每条使用简体中文，目标 160–240 个中文字符，最多约 280 个中文字符。"
+        language_instruction = (
+            "每条使用简体中文；summary 目标 160–240 个中文字符，最多约 280 个中文字符；"
+            "importance_reason 目标 40–100 个中文字符。"
+        )
     elif language_key in ("es", "español", "spanish"):
-        language_instruction = "Cada elemento debe estar en español y tener aproximadamente 90–150 palabras."
+        language_instruction = (
+            "Cada elemento debe estar en español; summary debe tener aproximadamente 90–150 palabras "
+            "e importance_reason debe ser breve."
+        )
     else:
-        language_instruction = "Each item must be in English and approximately 90–150 words."
+        language_instruction = (
+            "Each item must be in English; summary should be approximately 90–150 words and "
+            "importance_reason should be concise."
+        )
     target = min(10, len(event_groups))
     return (
         "Return valid JSON only, with the shape {\"items\": [{\"title\": str, \"summary\": str, "
+        "\"importance_reason\": str, "
         "\"kind\": \"event\" or \"company\", \"primary_ticker\": str or null, "
         "\"related_tickers\": [str], \"source_article_indices\": [int], \"risk\": str}]}. "
         f"Create up to {target} distinct technology and semiconductor event or company highlights from the "
@@ -424,10 +449,12 @@ def build_daily_brief_prompt(items, *, language="zh") -> str:
         "when fewer exist, return only supported items and never invent content to reach a quota. Each item "
         "must cover a different real event. Merge duplicate reporting about the same event. Do not organize "
         "the output into fixed Market, AI, Memory, NVDA, MU, AMD, company, ticker, or provider categories. "
-        "For every item explain what happened, why it matters to the industry, the supply-chain impact, and one "
-        "risk or open question. Use only supplied facts and tickers. Do not copy article text, fabricate figures "
+        "For every item, use summary to explain what happened, the supply-chain impact, and one risk or open "
+        "question. Use importance_reason to explain why the event matters for demand, supply, pricing, capacity, "
+        "CapEx, margins, regulation, or the industry value chain. Use only supplied facts and tickers. Do not copy "
+        "article text, fabricate figures "
         "or price targets, or provide investment, position, buy, or sell advice. source_article_indices must refer "
-        f"only to supplied article indices. {language_instruction}\n\nEvent candidates JSON:\n"
+        f"only to 1–4 supplied article indices. {language_instruction}\n\nEvent candidates JSON:\n"
         f"{json.dumps(_prompt_event_payload(event_groups), ensure_ascii=False)}"
     )
 
@@ -460,7 +487,100 @@ def _text_similarity(left, right):
     return len(left_tokens & right_tokens) / len(left_tokens | right_tokens)
 
 
-def validate_daily_brief_response(text, candidates, *, language="zh") -> list[dict]:
+def sanitize_news_url(url):
+    """Return an original HTTP(S) news URL, or None when it is not safely linkable."""
+    if not isinstance(url, str):
+        return None
+    cleaned = url.strip()
+    if not cleaned or any(character.isspace() or ord(character) < 32 for character in cleaned):
+        return None
+    try:
+        parsed = urlsplit(cleaned)
+    except ValueError:
+        return None
+    if parsed.scheme.lower() not in ("http", "https") or not parsed.netloc:
+        return None
+    return cleaned
+
+
+def validate_importance_reason(text, *, language="zh"):
+    """Keep a concise non-advisory importance explanation, or return None safely."""
+    if not isinstance(text, str):
+        return None
+    cleaned = re.sub(r"\s+", " ", text).strip()
+    if not cleaned:
+        return None
+    lowered = cleaned.lower()
+    if any(phrase in lowered for phrase in IMPORTANCE_ADVICE_PHRASES):
+        return None
+    language_key = str(language or "zh").lower()
+    if language_key in ("中文", "zh", "chinese") and len(cleaned) > 120:
+        return cleaned[:120].rstrip("，,；;。 ") + "。"
+    if language_key not in ("中文", "zh", "chinese"):
+        words = cleaned.split()
+        if len(words) > 80:
+            return " ".join(words[:80]).rstrip(".,;: ") + "."
+    return cleaned
+
+
+def _daily_brief_citation_pairs(item, candidates, *, max_citations=4, allowed_indices=None):
+    candidate_list = normalize_daily_brief_candidates(candidates)
+    raw_indices = item.get("source_article_indices") if isinstance(item, dict) else None
+    if not isinstance(raw_indices, (list, tuple)):
+        return []
+    try:
+        limit = min(4, max(0, int(max_citations)))
+    except (TypeError, ValueError):
+        limit = 4
+    if not limit:
+        return []
+    allowed = set(allowed_indices) if allowed_indices is not None else None
+    pairs = []
+    seen_indices = set()
+    seen_urls = set()
+    for value in raw_indices:
+        if isinstance(value, bool) or not isinstance(value, int):
+            continue
+        if allowed is not None and value not in allowed:
+            continue
+        if value in seen_indices or not 0 <= value < len(candidate_list):
+            continue
+        candidate = candidate_list[value]
+        safe_url = sanitize_news_url(candidate.get("url"))
+        if safe_url and safe_url in seen_urls:
+            continue
+        seen_indices.add(value)
+        if safe_url:
+            seen_urls.add(safe_url)
+        citation = {
+            "title": candidate.get("title"),
+            "url": safe_url,
+            "source": candidate.get("source") or candidate.get("provider") or "unavailable",
+            "publisher": candidate.get("publisher"),
+            "published_at": candidate.get("published_at"),
+            "ticker": candidate.get("ticker"),
+            "related_tickers": list(candidate.get("related_tickers") or []),
+            "is_fallback": bool(candidate.get("is_fallback")),
+        }
+        pairs.append((value, citation))
+        if len(pairs) >= limit:
+            break
+    return pairs
+
+
+def build_daily_brief_citations(item, candidates, *, max_citations=4) -> list[dict]:
+    """Rebuild a bounded citation list exclusively from actual candidate articles."""
+    return [
+        citation
+        for _, citation in _daily_brief_citation_pairs(
+            item,
+            candidates,
+            max_citations=max_citations,
+        )
+    ]
+
+
+def validate_daily_brief_response(text, candidates, *, language="zh", allowed_indices=None) -> list[dict]:
     """Parse and validate model JSON against actual candidate article indices and tickers."""
     try:
         payload = json.loads(_strip_json_fence(text))
@@ -484,15 +604,16 @@ def validate_daily_brief_response(text, candidates, *, language="zh") -> list[di
             raise ValueError("Daily brief response contains duplicate items.")
         if any(_text_similarity(summary, value) >= 0.75 for value in seen_summaries):
             raise ValueError("Daily brief response contains duplicate items.")
-        indices = raw.get("source_article_indices")
-        if not isinstance(indices, list) or not indices:
-            raise ValueError("Daily brief item must reference source articles.")
-        unique_indices = []
-        for value in indices:
-            if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value < len(candidate_list):
-                raise ValueError("Daily brief item references an invalid source article.")
-            if value not in unique_indices:
-                unique_indices.append(value)
+        citation_pairs = _daily_brief_citation_pairs(
+            raw,
+            candidate_list,
+            max_citations=4,
+            allowed_indices=allowed_indices,
+        )
+        if not citation_pairs:
+            continue
+        unique_indices = [index for index, _ in citation_pairs]
+        citations = [citation for _, citation in citation_pairs]
         referenced = [candidate_list[index] for index in unique_indices]
         allowed_tickers = {
             ticker for article in referenced for ticker in article.get("related_tickers") or []
@@ -510,19 +631,18 @@ def validate_daily_brief_response(text, candidates, *, language="zh") -> list[di
             raise ValueError("Daily brief item contains a ticker absent from its source articles.")
         if primary and primary not in related:
             related.insert(0, primary)
-        sources = list(dict.fromkeys(
-            str(article.get("source") or article.get("provider") or "unknown")
-            for article in referenced
-        ))
+        sources = list(dict.fromkeys(str(citation["source"]) for citation in citations))
         validated.append({
             "title": title,
             "summary": summary,
+            "importance_reason": validate_importance_reason(raw.get("importance_reason"), language=language),
             "kind": raw.get("kind") if raw.get("kind") in ("event", "company") else "event",
             "primary_ticker": primary,
             "related_tickers": related,
             "sources": sources,
             "article_count": len(unique_indices),
             "source_article_indices": unique_indices,
+            "citations": citations,
             "risk": str(raw.get("risk") or "").strip() or None,
         })
         seen_titles.append(title)
@@ -555,7 +675,7 @@ def generate_daily_brief(items, *, language="zh", client_factory=None, model="gp
     """Generate all event highlights with one structured OpenAI request."""
     generated_at = _parse_datetime(now) or datetime.now(timezone.utc)
     selected = select_daily_brief_news(items, max_items=40, now=generated_at)
-    event_groups = group_daily_brief_events(selected, max_events=18, max_articles=40, now=generated_at)
+    event_groups = _group_selected_daily_brief_events(selected, max_events=18, now=generated_at)
     if len(event_groups) < 3:
         return _empty_result("empty")
     if client_factory is None:
@@ -575,6 +695,11 @@ def generate_daily_brief(items, *, language="zh", client_factory=None, model="gp
             response.choices[0].message.content,
             selected,
             language=language,
+            allowed_indices={
+                index
+                for group in event_groups
+                for index in group.get("source_article_indices") or []
+            },
         )
     except Exception:
         result = _empty_result("error", error="Daily brief generation failed.")

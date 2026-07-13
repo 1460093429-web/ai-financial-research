@@ -5,6 +5,7 @@ import json
 import pytest
 
 from services.news_daily_brief import (
+    build_daily_brief_citations,
     build_daily_brief_prompt,
     daily_brief_fingerprint,
     deduplicate_daily_brief_news,
@@ -13,8 +14,10 @@ from services.news_daily_brief import (
     group_daily_brief_events,
     normalize_daily_brief_candidates,
     rank_daily_brief_news,
+    sanitize_news_url,
     select_daily_brief_news,
     validate_daily_brief_response,
+    validate_importance_reason,
 )
 from services.news_schema import attach_normalized_news_item
 
@@ -91,6 +94,10 @@ def structured_response(candidates, count):
             "summary": (
                 f"{candidate['summary']} This distinct event affects its specific technology value chain; "
                 f"the main open question is whether the reported change can be executed as described."
+            ),
+            "importance_reason": (
+                "This event matters because it can change technology demand, supply-chain capacity, "
+                "and capital spending decisions."
             ),
             "kind": "company" if ticker else "event",
             "primary_ticker": ticker,
@@ -272,6 +279,9 @@ def test_prompt_requests_multiple_dynamic_json_items_and_language_limits():
     assert "8–10 items" in prompt
     assert "160–240" in prompt
     assert "最多约 280" in prompt
+    assert '"importance_reason"' in prompt
+    assert "40–100" in prompt
+    assert "1–4 supplied article indices" in prompt
     assert "Do not organize" in prompt
     assert "fixed Market, AI, Memory, NVDA, MU, AMD" in prompt
     assert "buy, or sell advice" in prompt
@@ -287,18 +297,135 @@ def test_prompt_excludes_full_html_and_truncates_article_summary():
     assert "x" * 701 not in prompt
 
 
-def test_valid_json_is_parsed_and_server_derives_sources_and_article_count():
+def test_citations_rebuild_actual_candidate_fields_in_requested_index_order():
+    candidates = distinct_events(3)
+    candidates[0]["publisher"] = "Primary Publisher"
+    candidates[0]["published_date"] = "2026-07-13T09:30:00Z"
+    candidates[1]["source"] = "yfinance fallback"
+    candidates[1]["publisher"] = "Fallback Publisher"
+    candidates[1]["published_date"] = "2026-07-13T10:00:00Z"
+    candidates[2]["url"] = None
+    before = deepcopy(candidates)
+
+    citations = build_daily_brief_citations(
+        {"source_article_indices": [1, 0, 2]},
+        candidates,
+    )
+
+    assert [citation["title"] for citation in citations] == [
+        candidates[1]["title"], candidates[0]["title"], candidates[2]["title"],
+    ]
+    assert citations[0] == {
+        "title": candidates[1]["title"],
+        "url": candidates[1]["url"],
+        "source": "yfinance fallback",
+        "publisher": "Fallback Publisher",
+        "published_at": "2026-07-13T10:00:00Z",
+        "ticker": "NVDA",
+        "related_tickers": ["NVDA"],
+        "is_fallback": True,
+    }
+    assert citations[1]["publisher"] == "Primary Publisher"
+    assert citations[1]["published_at"] == "2026-07-13T09:30:00Z"
+    assert citations[2]["url"] is None
+    assert candidates == before
+
+
+def test_citations_filter_mixed_indices_duplicate_urls_and_enforce_maximum_four():
+    candidates = distinct_events(6)
+    candidates[1]["url"] = candidates[0]["url"]
+
+    citations = build_daily_brief_citations(
+        {"source_article_indices": [0, 0, 999, "1", True, 1, 2, 3, 4, 5]},
+        candidates,
+        max_citations=99,
+    )
+
+    assert len(citations) == 4
+    assert [citation["title"] for citation in citations] == [
+        candidates[0]["title"],
+        candidates[2]["title"],
+        candidates[3]["title"],
+        candidates[4]["title"],
+    ]
+    assert len({citation["url"] for citation in citations if citation["url"]}) == 4
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        ("https://example.com/news?id=1", "https://example.com/news?id=1"),
+        (" http://example.com/story ", "http://example.com/story"),
+        ("HTTPS://example.com/story", "HTTPS://example.com/story"),
+        (None, None),
+        ("", None),
+        ("//example.com/story", None),
+        ("javascript:alert(1)", None),
+        ("data:text/html,unsafe", None),
+        ("file:///tmp/news", None),
+        ("https:///missing-host", None),
+        ("http://[::1", None),
+        ("https://example.com/line\nbreak", None),
+    ],
+)
+def test_sanitize_news_url_only_keeps_safe_http_and_https(url, expected):
+    assert sanitize_news_url(url) == expected
+
+
+def test_valid_json_rebuilds_citations_sources_and_count_and_ignores_model_forgery():
     candidates = select_daily_brief_news(distinct_events(3), now="2026-07-13T12:00:00Z")
     payload = json.loads(structured_response(candidates, 3))
     payload["items"][0]["sources"] = ["invented"]
     payload["items"][0]["article_count"] = 99
+    payload["items"][0]["citations"] = [{
+        "title": "Invented article",
+        "url": "https://attacker.invalid/fake",
+        "source": "invented",
+    }]
+    before_candidates = deepcopy(candidates)
+    before_payload = deepcopy(payload)
 
     result = validate_daily_brief_response(json.dumps(payload), candidates, language="English")
 
     assert len(result) == 3
     assert result[0]["sources"] == [candidates[0]["source"]]
     assert result[0]["article_count"] == 1
+    assert result[0]["source_article_indices"] == [0]
+    assert result[0]["citations"] == [{
+        "title": candidates[0]["title"],
+        "url": candidates[0]["url"],
+        "source": candidates[0]["source"],
+        "publisher": candidates[0]["publisher"],
+        "published_at": candidates[0]["published_at"],
+        "ticker": candidates[0]["ticker"],
+        "related_tickers": candidates[0]["related_tickers"],
+        "is_fallback": False,
+    }]
+    assert result[0]["importance_reason"] == payload["items"][0]["importance_reason"]
     assert result[0]["kind"] in ("event", "company")
+    assert candidates == before_candidates
+    assert payload == before_payload
+
+
+def test_importance_reason_is_optional_cleaned_and_filters_investment_advice():
+    reason = "  This event may affect semiconductor supply, margins, and capital spending.  "
+
+    assert validate_importance_reason(reason, language="English") == reason.strip()
+    assert validate_importance_reason(None) is None
+    assert validate_importance_reason(123) is None
+    assert validate_importance_reason("  ") is None
+    assert validate_importance_reason("该事件很重要，建议买入相关股票。") is None
+    assert validate_importance_reason("This supports a price target and position size.", language="English") is None
+
+
+def test_validator_allows_missing_importance_reason_without_fabricating_fallback():
+    candidates = select_daily_brief_news(distinct_events(3))
+    payload = json.loads(structured_response(candidates, 3))
+    payload["items"][0].pop("importance_reason")
+
+    result = validate_daily_brief_response(json.dumps(payload), candidates, language="English")
+
+    assert result[0]["importance_reason"] is None
 
 
 @pytest.mark.parametrize("text", ["not json", "[]", '{"items": "wrong"}'])
@@ -334,7 +461,7 @@ def test_more_than_ten_items_are_truncated():
     assert len(result) == 10
 
 
-def test_unsupported_ticker_and_invalid_article_index_are_rejected():
+def test_unsupported_ticker_is_rejected():
     candidates = select_daily_brief_news(distinct_events(3))
     payload = json.loads(structured_response(candidates, 3))
     payload["items"][0]["primary_ticker"] = "FAKE"
@@ -342,10 +469,49 @@ def test_unsupported_ticker_and_invalid_article_index_are_rejected():
     with pytest.raises(ValueError, match="ticker absent"):
         validate_daily_brief_response(json.dumps(payload), candidates)
 
+
+def test_validator_filters_invalid_duplicate_and_non_integer_article_indices():
+    candidates = select_daily_brief_news(distinct_events(3))
     payload = json.loads(structured_response(candidates, 3))
-    payload["items"][0]["source_article_indices"] = [999]
-    with pytest.raises(ValueError, match="invalid source article"):
-        validate_daily_brief_response(json.dumps(payload), candidates)
+    payload["items"][0]["source_article_indices"] = [0, 999, "1", True, 0]
+
+    result = validate_daily_brief_response(json.dumps(payload), candidates)
+
+    assert result[0]["source_article_indices"] == [0]
+    assert result[0]["article_count"] == 1
+    assert [citation["title"] for citation in result[0]["citations"]] == [candidates[0]["title"]]
+
+
+def test_validator_filters_in_range_indices_that_were_not_submitted_to_openai():
+    candidates = select_daily_brief_news(distinct_events(4))
+    payload = json.loads(structured_response(candidates, 3))
+    payload["items"][0]["source_article_indices"] = [3, 0]
+
+    result = validate_daily_brief_response(
+        json.dumps(payload),
+        candidates,
+        allowed_indices={0, 1, 2},
+    )
+
+    assert result[0]["source_article_indices"] == [0]
+    assert [citation["title"] for citation in result[0]["citations"]] == [candidates[0]["title"]]
+    assert candidates[3]["title"] not in {
+        citation["title"]
+        for item in result
+        for citation in item["citations"]
+    }
+
+
+def test_validator_drops_items_without_any_valid_source_index():
+    candidates = select_daily_brief_news(distinct_events(4))
+    payload = json.loads(structured_response(candidates, 4))
+    payload["items"][0]["source_article_indices"] = [999, "0", True]
+
+    result = validate_daily_brief_response(json.dumps(payload), candidates)
+
+    assert len(result) == 3
+    assert all(item["source_article_indices"] for item in result)
+    assert candidates[0]["title"] not in {citation["title"] for item in result for citation in item["citations"]}
 
 
 def test_fewer_than_three_events_and_empty_input_do_not_call_openai():
@@ -399,6 +565,8 @@ def test_generation_returns_eight_distinct_items_with_one_openai_call():
     assert len(result["items"]) == 8
     assert len({item["title"] for item in result["items"]}) == 8
     assert all(item["summary"] and item["kind"] and isinstance(item["related_tickers"], list) for item in result["items"])
+    assert all(item["importance_reason"] and item["citations"] for item in result["items"])
+    assert all(item["article_count"] == len(item["citations"]) for item in result["items"])
     assert len(completions.calls) == 1
     assert completions.calls[0]["model"] == "gpt-4o-mini"
 
