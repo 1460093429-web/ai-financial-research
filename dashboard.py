@@ -21,6 +21,7 @@ import streamlit as st
 import yfinance as yf
 
 from components.market_cards import render_metric_row, render_snapshot_card
+from components.news_daily_brief import render_news_daily_brief
 from config import CACHE_DIR, get_fmp_api_key, get_openai_client
 from dashboard_support.company import (
     COMPANY_NAMES,
@@ -64,6 +65,11 @@ from services.news_normalization import (
     _trendforce_items_from_regex,
     _trendforce_items_from_soup,
 )
+from services.news_daily_brief import (
+    daily_brief_fingerprint,
+    generate_daily_brief,
+    select_daily_brief_news,
+)
 from translations.core import TRANSLATIONS
 from translations.macro import MACRO_TRANSLATION_OVERRIDES
 from translations.multi_agent import MULTI_AGENT_TEXTS, multi_agent_language as _multi_agent_language
@@ -88,7 +94,7 @@ from translations.news import (
     NEWS_TRANSLATION_UI,
     POSITIVE_NEWS_KEYWORDS,
 )
-from translations.news_ui import NEWS_UI_TRANSLATION_OVERRIDES
+from translations.news_ui import NEWS_DAILY_BRIEF_TEXT, NEWS_UI_TRANSLATION_OVERRIDES
 
 
 YFINANCE_CACHE_DIR = CACHE_DIR / "yfinance"
@@ -3551,6 +3557,80 @@ def summarize_safe_etf_article(article):
     return article.get("summary_zh") or "检测到 ETF.com 资金流栏目链接，但未能自动提取文章数据。"
 
 
+def _daily_brief_labels():
+    language = _news_summary_language(st.session_state.get("language", DEFAULT_LANGUAGE))
+    return NEWS_DAILY_BRIEF_TEXT.get(language, NEWS_DAILY_BRIEF_TEXT["English"])
+
+
+def collect_daily_brief_news():
+    """Collect existing cached news only after an explicit generation request."""
+    watchlist = tuple(load_watchlist())
+    items = []
+    try:
+        items.extend(get_cached_watchlist_news(watchlist, 10))
+    except Exception:
+        pass
+    try:
+        yahoo_by_ticker = get_cached_watchlist_yahoo_news(watchlist, 10)
+        items.extend(
+            item
+            for ticker in watchlist
+            for item in yahoo_by_ticker.get(ticker, [])
+        )
+    except Exception:
+        pass
+    try:
+        items.extend(get_cached_trendforce_news(20))
+    except Exception:
+        pass
+    try:
+        items.extend(get_cached_market_news(50))
+    except Exception:
+        pass
+    return items
+
+
+@st.cache_data(ttl=21600, show_spinner=False)
+def get_cached_news_daily_brief(candidate_json, language, data_date, fingerprint, refresh_nonce=0):
+    """Cache one AI brief by date, language, selected-news fingerprint, and nonce."""
+    track_cacheable_call()
+    candidates = json.loads(candidate_json)
+    return generate_daily_brief(
+        candidates,
+        language=language,
+        client_factory=get_openai_client,
+        model="gpt-4o-mini",
+    )
+
+
+def render_news_daily_brief_section():
+    language = _news_summary_language(st.session_state.get("language", DEFAULT_LANGUAGE))
+    data_date = date.today().isoformat()
+    state_key = f"news_daily_brief_result_{data_date}_{language}"
+    refresh_key = f"news_daily_brief_refresh_{data_date}_{language}"
+    result = st.session_state.get(state_key)
+    requested = render_news_daily_brief(
+        result,
+        labels=_daily_brief_labels(),
+        language=language,
+    )
+    if not requested:
+        return
+    if result:
+        st.session_state[refresh_key] = st.session_state.get(refresh_key, 0) + 1
+    candidates = select_daily_brief_news(collect_daily_brief_news(), max_items=8)
+    fingerprint = daily_brief_fingerprint(candidates)
+    candidate_json = json.dumps(candidates, ensure_ascii=False, sort_keys=True)
+    st.session_state[state_key] = get_cached_news_daily_brief(
+        candidate_json,
+        language,
+        data_date,
+        fingerprint,
+        st.session_state.get(refresh_key, 0),
+    )
+    st.rerun()
+
+
 def render_news_section():
     etf_flow_tab = "ETF.com Flow News"
     news_sections = [t("fmp_news_tab"), t("yahoo_news_tab"), t("trendforce_news_tab"), etf_flow_tab]
@@ -3560,6 +3640,7 @@ def render_news_section():
         horizontal=True,
         key="news_section_selector",
     )
+    render_news_daily_brief_section()
     with st.spinner("Loading news..."):
         if selected_news_section == t("fmp_news_tab"):
             render_fmp_news_section()

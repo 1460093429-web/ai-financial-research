@@ -88,3 +88,9 @@ Keep the adapter disconnected from production for one more step. Add a pure para
 ## Phase 2.16 static mock demo
 
 `components/news_diagnostics_demo.py` supplies fresh, static development fixtures for Yahoo, TrendForce, FMP, FMP-to-yfinance fallback, missing-schema, and partial-schema diagnostics. Its renderer is default-off and returns before constructing fixtures; explicit enablement delegates only to the existing gated diagnostics renderer. The module does not read environment configuration or call providers, caches, OpenAI, network services, or file I/O, and it remains disconnected from Dashboard, sidebar, routing, and production news pages.
+
+## Phase 3.0 technology daily brief
+
+The News & Sentiment source selector is followed by one on-demand Technology & Semiconductor Daily Brief card, before the selected legacy news list. Generation reuses the existing Watchlist and cached FMP, Yahoo, TrendForce, and market-news boundaries; it does not change provider or cache ownership. ETF.com remains available as an existing source tab but is not fetched separately for the brief because its cache key depends on controls local to that tab. A deterministic service normalizes, filters, deduplicates, ranks, and selects at most eight source-diverse candidates before calling the existing OpenAI client with `gpt-4o-mini`.
+
+The AI result cache has a six-hour TTL and keys on candidate JSON, page language, current date, candidate fingerprint, and an explicit regeneration nonce. No news or AI work occurs until the user clicks Generate; regeneration increments the nonce. Existing cards, source selection, sorting, translation, detailed summaries, scoring, and legacy fields remain authoritative and unchanged.
