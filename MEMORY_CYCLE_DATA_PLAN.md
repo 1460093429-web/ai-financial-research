@@ -458,3 +458,25 @@ It should not fetch data, add a production page, compute a score, infer a cycle
 phase, or turn unavailable metrics into synthetic observations. Three-language
 UI integration remains a later, separately approved step after the static view
 model is characterized.
+
+## 16. Phase 4.2 static fixtures and MVP view model
+
+Phase 4.2 adds reviewed synthetic records in `fixtures/memory_cycle_mvp.py` and
+the pure presentation model in `services/memory_cycle_view_model.py`. The
+fixtures cover MU/SNDK financials, MU/SNDK/SMH/SOXX market proxies, six cited
+qualitative signals, and five explicit source gaps. They are built with the
+Phase 4.1 adapters, use fixed injected timestamps, identify themselves as
+test/demo data, and are not imported by the production Dashboard path.
+
+The view model preserves source, observation time, unit, confidence, fallback,
+estimate, staleness, notes, and evidence availability. It groups records into
+company financials, pricing, demand, supply discipline, inventory health,
+market proxies, and unavailable data while retaining input order inside each
+group. Deterministic quality summaries and warnings are available in English,
+Simplified Chinese, and Spanish. Missing or unavailable values remain visibly
+non-numeric, zero remains a valid observation, qualitative news values remain
+labels, and proxy/news warnings state their limitations.
+
+This module performs no provider, network, OpenAI, IBKR, filesystem, secret,
+cache, Streamlit, score, or cycle-phase operation. No Dashboard page, route, or
+sidebar entry is added in this phase.
