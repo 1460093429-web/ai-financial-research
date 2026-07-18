@@ -6,7 +6,7 @@ import os
 import pytest
 
 from demos import memory_cycle_demo
-from fixtures.memory_cycle_mvp import FIXTURE_EVALUATED_AT, MEMORY_CYCLE_MVP_FIXTURES
+from fixtures.memory_cycle_mvp import MEMORY_CYCLE_MVP_FIXTURES
 
 
 def _statuses(view_model):
@@ -58,7 +58,8 @@ def test_full_fixture_scenario_returns_all_records():
     demo = memory_cycle_demo.build_demo_scenario("Full fixture")
 
     assert len(demo["metrics"]) == 21
-    assert demo["evaluated_at"] == FIXTURE_EVALUATED_AT
+    assert demo["evaluated_at"] == memory_cycle_demo.DEMO_EVALUATED_AT
+    assert [metric["status"] for metric in demo["metrics"]].count("stale") == 16
 
 
 def test_empty_data_scenario_returns_empty_records():
@@ -79,7 +80,7 @@ def test_stale_heavy_scenario_uses_fixed_time_and_contains_stale_records():
 
     assert demo["evaluated_at"] == "2025-08-01T12:00:00Z"
     assert _statuses(view).count("stale") == 16
-    assert view["evaluated_at"] == memory_cycle_demo.STALE_EVALUATED_AT
+    assert view["evaluated_at"] == memory_cycle_demo.DEMO_EVALUATED_AT
     for metric in demo["metrics"]:
         if metric["status"] == "stale":
             expected = date.fromisoformat("2025-08-01") - date.fromisoformat(metric["as_of"][:10])
@@ -171,14 +172,74 @@ def test_demo_shows_static_notice_fixed_time_and_required_footer(monkeypatch):
     memory_cycle_demo.render_memory_cycle_demo()
 
     assert ("title", "Memory Cycle Static Demo") in events
-    assert any(event[0] == "warning" and "Static Fixture" in event[1] for event in events)
+    assert any(event[0] == "warning" and "static test data" in event[1] for event in events)
     captions = [event[1] for event in events if event[0] == "caption"]
-    assert f"Fixed evaluation time: {FIXTURE_EVALUATED_AT}" in captions
+    assert "Fixture data date: 2025-01-31 – 2025-02-14" in captions
+    assert f"Fixed evaluated_at: {memory_cycle_demo.DEMO_EVALUATED_AT}" in captions
+    assert "Demo / test source: fixtures/memory_cycle_mvp.py" in captions
+    assert "No real data is fetched." in captions
     assert captions[-3:] == [
         "This is static demo data.",
         "No real market data is being fetched.",
         "No cycle score or phase is calculated.",
     ]
+
+
+@pytest.mark.parametrize(
+    ("language", "warning"),
+    [
+        ("中文", "这是静态测试数据，不代表当前市场或最新财报。"),
+        ("English", "This demo uses static test data and does not represent current market conditions or the latest filings."),
+        ("Español", "Esta demostración utiliza datos de prueba estáticos y no representa el mercado actual ni los últimos informes."),
+    ],
+)
+def test_static_data_warning_is_prominent_in_all_languages(monkeypatch, language, warning):
+    events = _install_streamlit_spy(monkeypatch, language=language)
+    monkeypatch.setattr(memory_cycle_demo, "render_memory_cycle_dashboard", lambda *args, **kwargs: None)
+
+    memory_cycle_demo.render_memory_cycle_demo()
+
+    assert ("warning", warning) in events
+
+
+def test_demo_copy_makes_no_realtime_or_latest_data_claim(monkeypatch):
+    events = _install_streamlit_spy(monkeypatch, language="中文")
+    monkeypatch.setattr(memory_cycle_demo, "render_memory_cycle_dashboard", lambda *args, **kwargs: None)
+
+    memory_cycle_demo.render_memory_cycle_demo()
+
+    rendered_copy = " ".join(str(part) for event in events for part in event[1:])
+    assert "实时" not in rendered_copy
+    assert "最新数据" not in rendered_copy
+
+
+def test_fixture_dates_remain_unchanged():
+    dates = {metric["as_of"] for metric in MEMORY_CYCLE_MVP_FIXTURES if metric.get("as_of")}
+
+    assert min(dates) == "2025-01-31"
+    assert max(dates) == "2025-02-14"
+    assert all(not value.startswith("2026") for value in dates)
+
+
+def test_full_fixture_stale_cards_include_status_and_days(monkeypatch):
+    _install_streamlit_spy(monkeypatch)
+    rendered = []
+    monkeypatch.setattr(
+        memory_cycle_demo,
+        "render_memory_cycle_dashboard",
+        lambda view_model, *, language: rendered.append(view_model),
+    )
+
+    memory_cycle_demo.render_memory_cycle_demo()
+
+    stale = [
+        metric
+        for section in rendered[0]["sections"]
+        for metric in section["metrics"]
+        if metric["status"] == "stale"
+    ]
+    assert len(stale) == 16
+    assert all(isinstance(metric["staleness_days"], int) and metric["staleness_days"] > 0 for metric in stale)
 
 
 def test_demo_does_not_copy_lower_level_component_renderers():

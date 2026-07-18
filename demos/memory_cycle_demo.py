@@ -6,7 +6,7 @@ from datetime import date
 import streamlit as st
 
 from components.memory_cycle import render_memory_cycle_dashboard
-from fixtures.memory_cycle_mvp import FIXTURE_EVALUATED_AT, MEMORY_CYCLE_MVP_FIXTURES
+from fixtures.memory_cycle_mvp import MEMORY_CYCLE_MVP_FIXTURES
 from services.memory_cycle_view_model import build_memory_cycle_view_model
 
 
@@ -19,27 +19,25 @@ SCENARIO_OPTIONS = (
     "Unavailable-heavy",
     "Proxy/news-signal focused",
 )
-STALE_EVALUATED_AT = "2025-08-01T12:00:00Z"
+DEMO_EVALUATED_AT = "2025-08-01T12:00:00Z"
+DEMO_SOURCE = "fixtures/memory_cycle_mvp.py"
 
 _LANGUAGE_CODES = {"中文": "zh", "English": "en", "Español": "es"}
 _DEMO_TEXT = {
     "zh": {
         "title": "存储周期静态演示",
-        "notice": "Demo / Static Fixture：仅用于人工视觉检查，不是生产数据。",
+        "notice": "这是静态测试数据，不代表当前市场或最新财报。",
         "scenario": "演示场景",
-        "evaluated_at": "固定评估时间",
     },
     "en": {
         "title": "Memory Cycle Static Demo",
-        "notice": "Demo / Static Fixture: for visual review only; this is not production data.",
+        "notice": "This demo uses static test data and does not represent current market conditions or the latest filings.",
         "scenario": "Demo scenario",
-        "evaluated_at": "Fixed evaluation time",
     },
     "es": {
         "title": "Demo estática del ciclo de memoria",
-        "notice": "Demo / Datos estáticos: solo para revisión visual; no son datos de producción.",
+        "notice": "Esta demostración utiliza datos de prueba estáticos y no representa el mercado actual ni los últimos informes.",
         "scenario": "Escenario de demostración",
-        "evaluated_at": "Hora fija de evaluación",
     },
 }
 
@@ -49,10 +47,28 @@ def _fixed_staleness_days(as_of):
         return None
     try:
         observation = date.fromisoformat(as_of[:10])
-        reference = date.fromisoformat(STALE_EVALUATED_AT[:10])
+        reference = date.fromisoformat(DEMO_EVALUATED_AT[:10])
     except ValueError:
         return None
     return (reference - observation).days
+
+
+def _fixture_data_date():
+    dates = sorted({
+        metric["as_of"][:10]
+        for metric in MEMORY_CYCLE_MVP_FIXTURES
+        if isinstance(metric.get("as_of"), str) and len(metric["as_of"]) >= 10
+    })
+    if not dates:
+        return "N/A"
+    return dates[0] if len(dates) == 1 else f"{dates[0]} – {dates[-1]}"
+
+
+def _mark_expired_observations_stale(metrics):
+    for metric in metrics:
+        if metric.get("status") == "ok":
+            metric["status"] = "stale"
+            metric["staleness_days"] = _fixed_staleness_days(metric.get("as_of"))
 
 
 def normalize_demo_language(language):
@@ -67,7 +83,6 @@ def build_demo_scenario(scenario="Full fixture") -> dict:
     """Return a fresh deterministic fixture scenario and its evaluation time."""
     selected = scenario if scenario in SCENARIO_OPTIONS else SCENARIO_OPTIONS[0]
     metrics = [deepcopy(metric) for metric in MEMORY_CYCLE_MVP_FIXTURES]
-    evaluated_at = FIXTURE_EVALUATED_AT
 
     if selected == "Empty data":
         metrics = []
@@ -79,12 +94,6 @@ def build_demo_scenario(scenario="Full fixture") -> dict:
                 metric["status"] = "missing"
                 metric["staleness_days"] = None
                 changed += 1
-    elif selected == "Stale-heavy":
-        evaluated_at = STALE_EVALUATED_AT
-        for metric in metrics:
-            if metric.get("status") == "ok":
-                metric["status"] = "stale"
-                metric["staleness_days"] = _fixed_staleness_days(metric.get("as_of"))
     elif selected == "Unavailable-heavy":
         metrics = [metric for metric in metrics if metric.get("status") == "unavailable"]
     elif selected == "Proxy/news-signal focused":
@@ -94,10 +103,12 @@ def build_demo_scenario(scenario="Full fixture") -> dict:
             if metric.get("source_type") in {"proxy", "news_signal"}
         ]
 
+    _mark_expired_observations_stale(metrics)
+
     return {
         "scenario": selected,
         "metrics": metrics,
-        "evaluated_at": evaluated_at,
+        "evaluated_at": DEMO_EVALUATED_AT,
     }
 
 
@@ -125,7 +136,10 @@ def render_memory_cycle_demo():
     st.warning(text["notice"])
     scenario = st.selectbox(text["scenario"], SCENARIO_OPTIONS, index=0)
     demo = build_demo_scenario(scenario)
-    st.caption(f"{text['evaluated_at']}: {demo['evaluated_at']}")
+    st.caption(f"Fixture data date: {_fixture_data_date()}")
+    st.caption(f"Fixed evaluated_at: {demo['evaluated_at']}")
+    st.caption(f"Demo / test source: {DEMO_SOURCE}")
+    st.caption("No real data is fetched.")
     view_model = build_memory_cycle_view_model(
         demo["metrics"],
         evaluated_at=demo["evaluated_at"],

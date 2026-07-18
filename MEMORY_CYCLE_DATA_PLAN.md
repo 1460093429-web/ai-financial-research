@@ -526,3 +526,12 @@ copy metric or section rendering. The demo reads no provider, production
 session state, secret, API key, environment variable, cache, or file and is not
 imported by `dashboard.py`. No production page, route, or sidebar entry is
 added.
+
+The demo header explicitly states in all three languages that the fixture does
+not represent current market conditions or the latest filings. It shows the
+unchanged fixture observation-date range (`2025-01-31` through `2025-02-14`),
+the fixed demo `evaluated_at`, the fixture module as the demo/test source, and
+that no real data is fetched. Observable fixture records are re-evaluated only
+on fresh demo copies against the fixed demo date, so expired values display as
+stale with deterministic `staleness_days`; source dates and financial values
+are never advanced or replaced.

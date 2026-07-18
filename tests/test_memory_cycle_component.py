@@ -157,7 +157,7 @@ def test_dashboard_renders_all_quality_summary_values_and_warnings(monkeypatch):
         ("column_metric", "Unavailable metrics", 5),
         ("column_metric", "Proxy metrics", 4),
         ("column_metric", "News signals", 6),
-        ("column_metric", "Most recent data date", "2025-02-14"),
+        ("column_metric", "Data date", "2025-02-14"),
     ]
     assert [event[1] for event in events if event[0] == "warning"][:3] == _view("en")["warnings"]
 
@@ -279,6 +279,26 @@ def test_dashboard_and_card_labels_are_localized(monkeypatch, language, title, q
     assert events[0] == ("title", title)
     assert ("subheader", quality) in events
     assert any(event[0] == "caption" and event[1].startswith(f"{source}:") is False and f"{source}:" in event[1] for event in events)
+
+
+@pytest.mark.parametrize(
+    ("language", "date_label"),
+    [("zh", "数据日期"), ("en", "Data date"), ("es", "Fecha de los datos")],
+)
+def test_quality_summary_uses_neutral_data_date_labels(monkeypatch, language, date_label):
+    events = _install_streamlit_spy(monkeypatch)
+
+    memory_cycle.render_memory_cycle_dashboard(_view(language), language=language)
+
+    labels = [event[1] for event in events if event[0] == "column_metric"]
+    assert date_label in labels
+    misleading = {
+        "最新数据日期",
+        "Latest data date",
+        "Most recent data date",
+        "Fecha de datos más reciente",
+    }
+    assert misleading.isdisjoint(labels)
 
 
 def test_unknown_language_falls_back_to_english(monkeypatch):
