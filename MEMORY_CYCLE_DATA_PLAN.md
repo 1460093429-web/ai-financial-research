@@ -769,7 +769,7 @@ with ticker, field, fiscal period, currency, and unit isolated. Cache-hit or
 cached-at time must never replace price time, filing period end, or original
 retrieval time.
 
-### 19.5 Remaining unavailable data and Phase 4.7 gate
+### 19.5 Remaining unavailable data and next gate
 
 Exact DRAM/NAND/HBM and SSD prices or ASPs; inventory and inventory days;
 channel/module inventory; bit supply/demand growth; shipments; wafer,
@@ -779,10 +779,165 @@ unavailable. Equity/ETF proxies do not populate those fields.
 
 This pipeline is not imported by `dashboard.py`, is not passed through the
 view model/component, creates no page, route, sidebar item, refresh control, or
-session state, and has not been validated with a real network request. Before
-formal integration, a separately approved provider metadata boundary must
-prove price time/currency/provenance and financial fiscal/source metadata,
-define source priority and cache/refresh ownership, and pass page-isolation and
-multilingual integration gates. A separate preview harness may instead
-exercise the pure service without production navigation, but must show
-missing/unavailable states and never use static fixtures as production data.
+session state, and has not been validated with a real network request. Phase
+4.7, documented below, adds a separately testable metadata boundary, but it
+does not validate credentials or a live provider schema. Formal integration
+still requires an authorized acquisition binding, controlled smoke evidence,
+cache/refresh ownership, and page-isolation and multilingual integration gates.
+A separate preview harness may instead exercise the pure service without
+production navigation, but must show missing/unavailable states and never use
+static fixtures as production data.
+
+## 20. Phase 4.7 provider metadata completion
+
+Phase 4.7 adds `providers/memory_cycle_data.py` and
+`services/memory_cycle_live.py`. They form a pure dependency-injection
+boundary between caller-owned Yahoo/FMP acquisition and the Phase 4.6 service:
+
+```text
+caller-injected Yahoo/FMP raw callable
+  -> Phase 4.7 provider-specific parsing and metadata validation
+  -> metadata-complete raw observations plus sanitized provider errors
+  -> Phase 4.7 live orchestration
+  -> Phase 4.6 validation/adapters
+  -> ten canonical metric slots
+```
+
+The repository audit rejected direct use of the existing high-level helpers.
+Dashboard quote and What-if helpers lose currency or use naive/local quote
+times; historical-price helpers do not provide one verified quote-time,
+currency, and fallback contract; company/card snapshots mix sources and lose
+field-level fiscal metadata. The current IBKR helper exposes a network-arrival
+time rather than a reliably matched exchange price time. Importing root
+`financials.py` would also import `config.py`, load environment/secrets, and
+create data/cache directories. Phase 4.7 therefore imports none of those
+modules. The only existing low-level raw boundary identified as potentially
+bindable is the private FMP JSON helper, passed through a caller-owned closure;
+there is no existing named Yahoo helper that already returns price, currency,
+and aware market time together. A future composition must supply that raw
+Yahoo `info` callable. Neither source is wired by Phase 4.7, which owns no
+credentials or network client.
+
+### 20.1 Market raw mapping and fallback
+
+`fetch_market_observations(tickers, *, yahoo_quote_fetcher, retrieved_at,
+fmp_quote_fetcher=None)` supports MU, SNDK, SMH, and SOXX in canonical order.
+The exact accepted mappings are:
+
+| Provider path | Value | Currency | Market time | Source metadata |
+| --- | --- | --- | --- | --- |
+| Yahoo primary | `regularMarketPrice` | `currency` | `regularMarketTime` | `Yahoo Finance` / `regularMarketPrice` / `quote` |
+| FMP fallback | `price` | `currency` | `timestamp` | `FMP` / `price` / `quote` |
+
+Numeric provider epochs are converted explicitly to aware UTC timestamps.
+Aware ISO timestamps are normalized to UTC. Missing, invalid, or naive market
+times are rejected; `retrieved_at` is mandatory, caller-injected, aware, and
+never substituted for the market time. Currency comes only from the raw quote,
+must be a safe three-letter uppercase ISO-style code, and is copied to both raw
+`currency` and monetary `unit`; it is not guessed from the ticker. Phase 4.6
+still requires USD for an accepted canonical market metric, so another safe
+preserved currency becomes a visible validation failure rather than an
+implicit conversion. Arbitrary currency text is rejected before it can be
+echoed.
+
+Yahoo is the only primary. FMP is called only after the Yahoo callable raises,
+returns no matching row, or lacks required metadata. Primary success never
+calls FMP. A successful fallback records `source=FMP`, `is_fallback=true`,
+`fallback_from=Yahoo Finance`, the FMP market time, and the batch retrieval
+time. It does not reset staleness or increase confidence. Current IBKR, CSV,
+history, post/pre-market, options, card, and derived-score paths are excluded.
+
+### 20.2 Financial raw mapping and SNDK boundary
+
+`fetch_financial_observations(tickers, *,
+fmp_income_statement_fetcher, retrieved_at,
+fmp_identity_fetcher=None)` supports MU and SNDK. It accepts only raw FMP
+income-statement rows with an exact statement `symbol`, `date`, provider year
+metadata (`fiscalYear` when supplied, otherwise `calendarYear`), one of
+`Q1`–`Q4` or `FY`, and `reportedCurrency`. It chooses the latest verifiable
+period end rather than trusting response order. Two valid rows at the same
+latest date are ambiguous and are rejected instead of selecting a quarterly
+or annual interpretation by list order. A fallback `calendarYear` must match
+the period-end calendar year; an explicit valid `fiscalYear` may differ and is
+preserved without applying a Micron-specific rule. Reported currency must use
+the same safe three-letter uppercase form as market currency.
+
+| Canonical field | Raw field | Raw unit/currency | Phase 4.6 output |
+| --- | --- | --- | --- |
+| Revenue | `revenue` | full units in `reportedCurrency` | USD millions only when explicit USD passes Phase 4.6 |
+| Gross Margin | `grossProfitRatio` | ratio; no observation currency | percent, converted once by Phase 4.6 |
+| Operating Margin | `operatingIncomeRatio` | ratio; no observation currency | percent, converted once by Phase 4.6 |
+
+No margin is synthesized from gross profit, operating income, or revenue, and
+no alternative margin field is relabelled as a direct ratio. A missing or
+invalid one of the three fields removes only that sibling observation. Shared
+statement metadata failure removes all three fields for that ticker. The raw
+`date` is the statement period end and becomes `as_of`; injected
+`retrieved_at` remains separate.
+
+Quarterly labels are the neutral provider label `<year> Q<n>` and annual labels
+are `<year>`. They do not claim that `calendarYear` is Micron's formal fiscal
+year, and no Micron fiscal-calendar rule is applied. Explicit `fiscalYear`, if
+present and valid, has priority. TTM, unknown, latest, recent, unsupported
+periods, missing year metadata, and same-date period ambiguity remain missing.
+
+SNDK has an additional issuer boundary. Before statement acquisition, an
+injected FMP profile response must contain exact `symbol=SNDK`, a complete
+SanDisk company-name match, and exactly one distinct conservative ten-digit
+CIK; duplicate rows with that same CIK are harmless, while conflicting CIKs
+are ambiguous. Accepted statement rows must also use exact `SNDK`, match that
+CIK, and have a period end on or after the repository-audited `2025-01-01`
+cutoff. No WDC mapping, legacy WDC splice, or pre-cutoff history is accepted. A
+missing, ambiguous, or mismatched profile or statement identifier becomes
+`identity_unverified` or
+`statement_identity_mismatch`; a pre-cutoff period becomes
+`legacy_statement`. These are syntactic cross-response checks, not proof that
+the live FMP history is complete, comparable, authorized, or tied to the
+current listed entity; that still requires a controlled live smoke and source
+review.
+
+### 20.3 Provider result and live orchestration
+
+Both provider functions return fresh objects with exactly `observations`,
+`errors`, and `status`. Provider errors contain only `family`, `ticker`,
+`field`, and `code`; exception strings, tracebacks, URLs/query parameters,
+headers, response bodies, credentials, and local paths are never copied.
+Ticker and field failures are isolated. An empty requested scope is `empty`;
+a non-empty scope with no accepted observation is `error`; mixed success is
+`partial`; complete accepted observations are `ok`.
+
+`build_live_memory_cycle_result` receives both raw fetch callables plus
+mandatory aware `retrieved_at` and `evaluated_at`, optional FMP market and SNDK
+identity callables, and optional market/financial scopes. It invokes the two
+provider wrappers, passes fresh observation dictionaries to
+`build_memory_cycle_production_metrics`, merges/deduplicates/sorts both error
+layers, and preserves all Phase 4.6 metrics and quality counts. A valid FMP
+fallback can still produce `ok` because its low-confidence fallback lineage is
+explicit. A provider outage for a non-empty scope is `partial`, not the
+`empty` state reserved for an explicitly empty request. Unexpected production
+failure returns only a sanitized `internal_error` envelope.
+As in Phase 4.6, this catastrophic error envelope has no metric records;
+the fixed ten slots apply to `ok`, `partial`, and `empty` results.
+
+### 20.4 Cache, tests, smoke, and Phase 4.8 preconditions
+
+Phase 4.7 implements no cache, refresh nonce, persistence, environment lookup,
+secret lookup, Streamlit/session access, hidden current-time call, file I/O,
+OpenAI, IBKR, news inference, score, or cycle-phase logic. Automated tests use
+only injected fakes and make no real provider request. No manual network smoke
+was run in this phase, so Yahoo/FMP entitlement, rate limits, live field
+availability, SNDK issuer history, and production latency remain unverified.
+
+No Dashboard Section, route, sidebar item, component call, view-model call,
+production preview, or static-fixture fallback was added. A Phase 4.8
+production preview or acquisition/cache phase must first:
+
+1. supply an authorized caller-owned raw Yahoo adapter and, if suitable, bind
+   the private FMP JSON helper without importing UI code;
+2. perform a controlled, non-persistent schema/identity smoke without printing
+   credentials or raw responses;
+3. define Memory Cycle-owned market and financial cache keys, TTLs, and refresh
+   isolation while preserving original `as_of` and `retrieved_at`;
+4. retain the ten-slot partial-failure and sanitized-error behavior; and
+5. remain outside formal Dashboard navigation until page isolation,
+   multilingual text, responsive layout, and global loading-order gates pass.

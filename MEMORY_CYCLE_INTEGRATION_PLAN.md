@@ -7,10 +7,12 @@ Dashboard integration. It does not authorize a route, Section label, provider,
 cache, session key, score, or cycle-phase implementation.
 
 The Phase 4.5 decision was `WAIT_FOR_MINIMUM_PRODUCTION_DATA_PIPELINE`.
-Phase 4.6 now provides the pure validation/orchestration portion, but not live
-acquisition, provider metadata completion, cache/refresh, or page isolation.
-**Current decision: `WAIT_FOR_PROVIDER_METADATA_COMPLETION`.** Keep the static
-Demo independent. Do not add a Static Preview to the production Dashboard now.
+Phase 4.6 provides pure production validation, and Phase 4.7 now provides a
+metadata-complete, caller-injected Yahoo/FMP wrapper plus live orchestration.
+It still does not own credentials, autonomous acquisition, cache/refresh, or a
+page isolation boundary. **Current decision:
+`WAIT_FOR_AUTHORIZED_ACQUISITION_AND_CACHE_BOUNDARY`.** Keep the static Demo
+independent. Do not add a Static Preview to the production Dashboard now.
 
 The decision is based on data credibility, user experience, misleading-current-
 data risk, implementation cost, real-source availability, and the current lack
@@ -202,10 +204,12 @@ not fetch, normalize, calculate provider priority, or cache data.
   mappings are not production-tested.
 - News signals need durable citation retention, extraction-method metadata, and
   confidence review; Daily Brief is an aggregator, not a fact source.
-- Phase 4.6 now owns pure observation validation, canonical ten-slot ordering,
+- Phase 4.6 owns pure observation validation, canonical ten-slot ordering,
   per-observation partial failure, quality counts, and a sanitized backend
-  result envelope. It does not own live source priority, provider
-  normalization, refresh isolation, cache, or a page-level error boundary.
+  result envelope. Phase 4.7 owns the limited Yahoo→FMP quote priority and FMP
+  income-statement normalization through injected raw callables. Neither phase
+  owns an authorized live acquisition binding, refresh isolation, cache, or a
+  page-level error boundary.
 
 Production data would provide materially greater user value, but it has high
 implementation and validation cost. Static fixture values cannot fill these
@@ -222,11 +226,11 @@ gaps because they are synthetic test observations, not delayed production data.
 | Immediate implementation cost | Lower | Higher |
 | Current readiness | Demo-ready, not production-ready | Not ready |
 
-**Recommendation:** `WAIT_FOR_PROVIDER_METADATA_COMPLETION` before adding a
-formal Dashboard Section. The Phase 4.6 pure service boundary is necessary but
-does not make the audited provider helpers production-ready. Continue using the
-independent Demo for design and QA; this is not approval to begin production
-integration in this phase.
+**Recommendation:** `WAIT_FOR_AUTHORIZED_ACQUISITION_AND_CACHE_BOUNDARY` before
+adding a formal Dashboard Section. Phase 4.7 verifies the mock-driven metadata
+boundary, but does not prove live provider entitlement/schema behavior or page
+cache/refresh isolation. Continue using the independent Demo for design and
+QA; this is not approval to begin production integration in this phase.
 
 ## 8. Page-level error isolation contract
 
@@ -280,9 +284,9 @@ Rules:
 ## 10. Cache ownership
 
 Cache design belongs to provider/service functions, never to the component.
-Phase 4.6 intentionally implements no cache and imports no existing Dashboard
-cache. The rules below remain future requirements, not claims about the current
-pure service.
+Phases 4.6 and 4.7 intentionally implement no cache and import no existing
+Dashboard cache. The rules below remain future requirements, not claims about
+the current pure services.
 
 ### Company financials
 
@@ -317,8 +321,8 @@ pure service.
 
 ## 11. Refresh strategy
 
-Phase 4.6 adds no refresh control, nonce, session key, or cache-clearing path.
-The following strategy remains deferred until a provider/cache owner is
+Phases 4.6 and 4.7 add no refresh control, nonce, session key, or cache-clearing
+path. The following strategy remains deferred until a provider/cache owner is
 separately approved.
 
 - Initial Production Data entry may load only Memory Cycle service inputs after
@@ -439,24 +443,73 @@ Dashboard change is part of Phase 4.6. Direct DRAM/NAND/HBM data, inventory,
 capacity, ASP, bit growth, composite score, and cycle phase remain unavailable.
 The independent static Demo is unchanged and is never a production fallback.
 
-## 16. Phase 4.7 gate and recommendation
+## 16. Phase 4.7 implemented provider metadata boundary
 
-The Phase 4.6 service is necessary but not sufficient for formal integration.
-Every applicable gate in section 14 remains binding. Phase 4.7 should choose
-one separately approved direction:
+Phase 4.7 adds the following non-UI flow without modifying Dashboard code:
 
-1. **Provider Metadata Completion (recommended):** verify aware quote time,
-   currency, and provenance for all four market tickers; verify field-level
-   fiscal label/type, period end, unit/currency, and source document for both
-   companies; then test provider failures, source priority, fallback selection,
-   cache keys/TTLs, and refresh isolation with injected fakes.
-2. **Production Preview Harness:** independently exercise the pure Phase 4.6
-   service without production routing and visibly distinguish usable, stale,
-   missing, unavailable, fallback, and error results. It must not use static
-   fixtures as production data or imply that live acquisition exists.
+```text
+caller-injected Yahoo info / FMP raw JSON callable
+  -> providers/memory_cycle_data.py
+  -> metadata-complete observations and four-field safe errors
+  -> services/memory_cycle_live.py
+  -> Phase 4.6 production service
+  -> ten canonical slots and quality counts for non-catastrophic results
+```
 
-Provider Metadata Completion is recommended first because no audited current
-fetcher emits either complete accepted raw contract. Neither direction
-implicitly approves a Dashboard Section. Formal navigation remains blocked
-until provider metadata, cache/refresh, page error isolation, three languages,
-responsive layouts, loading order, and every other integration gate are met.
+The market path supports MU, SNDK, SMH, and SOXX. Yahoo primary uses only
+`regularMarketPrice`, provider `currency`, and `regularMarketTime`; optional
+FMP fallback uses `price`, provider `currency`, and `timestamp`. Epochs are
+converted to aware UTC. Missing/naive timestamps or currency are rejected, and
+retrieval time is never substituted. Fallback retains the FMP observation time
+and records `is_fallback=true` and `fallback_from=Yahoo Finance`. Existing
+IBKR, CSV, EOD-history, card, What-if, and post/pre-market paths remain outside
+this boundary.
+
+The financial path supports the three direct FMP income-statement fields
+`revenue`, `grossProfitRatio`, and `operatingIncomeRatio` for MU and SNDK. One
+selected row supplies one period end, provider year/period label,
+annual/quarterly type, safe provider currency, source document, and retrieval
+time to all available siblings. The wrapper generates neutral labels such as
+`2026 Q3`, not an inferred Micron fiscal year. It does not calculate margins.
+SNDK requires exact SNDK statement identity, a separate profile name/CIK match,
+the same CIK on the statement, and a period end on or after `2025-01-01`; WDC
+is never mapped or spliced. This syntactic cross-check does not prove live
+issuer-history completeness or comparability.
+
+`build_live_memory_cycle_result` validates both injected times before any
+fetch, isolates market and financial failures, invokes Phase 4.6, and
+sanitizes/deduplicates/sorts provider and production errors. An explicitly
+empty scope remains `empty`; provider failure for a non-empty scope is
+`partial`; a complete fallback result can remain `ok` with low confidence.
+
+The wrappers import no Dashboard, `financials.py`, configuration, Streamlit,
+provider SDK, OpenAI, IBKR, or file/cache module. They do not create clients or
+read keys. Automated tests use only fakes. No manual network smoke was run, so
+live Yahoo/FMP schema availability, provider authorization, rate limits,
+latency, and SNDK history remain unverified. No cache, refresh, production
+preview, view-model/component invocation, route, navigation, or Dashboard
+integration was added.
+
+## 17. Phase 4.8 recommendation
+
+Every applicable gate in section 14 remains binding. The recommended next
+phase is **Authorized Acquisition and Isolated Production Preview**:
+
+1. supply an authorized caller-owned raw Yahoo adapter and, if suitable, bind
+   the private FMP JSON helper outside UI code; verify both live raw schemas
+   with a controlled, non-persistent smoke;
+2. confirm SNDK issuer/period coverage and keep unavailable states when that
+   evidence is absent;
+3. add Memory Cycle-owned cache boundaries only after schema validation:
+   market TTL 15–60 minutes keyed by ticker/source/semantic, and financial TTL
+   6–24 hours keyed by ticker/source/period type, with original retrieval and
+   observation times preserved;
+4. implement refresh isolation and test that empty/error results are not cached
+   as successful data; and
+5. exercise a standalone production preview with usable, stale, fallback,
+   partial, empty, and error states before any formal navigation change.
+
+This recommendation does not approve a Dashboard Section. Formal navigation
+remains blocked until authorized acquisition, cache/refresh, page error
+isolation, three-language text, responsive/dark-mode QA, global loading-order
+resolution, and every other integration gate are satisfied.
