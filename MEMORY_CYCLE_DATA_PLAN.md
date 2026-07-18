@@ -502,3 +502,27 @@ standalone boundary, with English as the fallback for an unknown language. The
 component uses no provider, network, OpenAI, IBKR, filesystem, secret, cache,
 score, or cycle-phase operation. It is not imported by `dashboard.py`, and no
 page, route, sidebar entry, or production data flow is added in this phase.
+
+## 18. Phase 4.4 static demo harness
+
+Phase 4.4 adds `demos/memory_cycle_demo.py`, an independently runnable
+Streamlit harness for visual review of the Phase 4.2 static fixtures through
+the Phase 4.3 component. It provides Simplified Chinese, English, and Spanish
+selection plus stable full, empty, missing-heavy, stale-heavy,
+unavailable-heavy, and proxy/news-signal-focused scenarios. Every scenario
+returns fresh records, preserves the original fixture, and uses an explicit
+fixed evaluation timestamp rather than the current clock.
+
+Run the centered, responsive review page with:
+
+```bash
+streamlit run demos/memory_cycle_demo.py
+```
+
+The harness identifies itself as static demo data and states that no real
+market data is fetched and no cycle score or phase is calculated. It delegates
+all Memory Cycle presentation to `render_memory_cycle_dashboard`; it does not
+copy metric or section rendering. The demo reads no provider, production
+session state, secret, API key, environment variable, cache, or file and is not
+imported by `dashboard.py`. No production page, route, or sidebar entry is
+added.
