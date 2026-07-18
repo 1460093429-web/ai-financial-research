@@ -480,3 +480,25 @@ labels, and proxy/news warnings state their limitations.
 This module performs no provider, network, OpenAI, IBKR, filesystem, secret,
 cache, Streamlit, score, or cycle-phase operation. No Dashboard page, route, or
 sidebar entry is added in this phase.
+
+## 17. Phase 4.3 standalone MVP UI components
+
+Phase 4.3 adds `components/memory_cycle.py`, a presentation-only Streamlit
+component built from the Phase 4.2 view model. A pure preparation function
+copies and safely shapes sections, metrics, the quality summary, warnings, and
+the most recent observation date without changing order or deriving any new
+financial signal. Separate dashboard, section, and metric renderers keep this
+preparation independent from Streamlit calls.
+
+The component displays the seven existing sections and a quality summary for
+available, missing, stale, unavailable, proxy, and news-signal observations.
+Each metric keeps its value/unit, status, confidence, observation date, source,
+source type, badges, evidence state, staleness, and notes visible. Missing and
+unavailable values are rendered as explicit states rather than zero; proxy,
+news-signal, fallback, estimate, and stale limitations remain prominent.
+
+English, Simplified Chinese, and Spanish component copy is local to this
+standalone boundary, with English as the fallback for an unknown language. The
+component uses no provider, network, OpenAI, IBKR, filesystem, secret, cache,
+score, or cycle-phase operation. It is not imported by `dashboard.py`, and no
+page, route, sidebar entry, or production data flow is added in this phase.
