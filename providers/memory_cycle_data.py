@@ -416,6 +416,45 @@ def fetch_market_observations(
     return _result(observations, errors)
 
 
+def fetch_fmp_market_observations(
+    tickers: Any,
+    *,
+    fmp_quote_fetcher: Callable[[str], Any],
+    retrieved_at: Any,
+) -> dict[str, Any]:
+    """Return FMP quotes as primary market proxy observations."""
+
+    _, retrieval_text = _required_timestamp(retrieved_at, name="retrieved_at")
+    requested, errors = _requested_tickers(
+        tickers, SUPPORTED_MARKET_TICKERS, family="market_proxy"
+    )
+    observations: list[dict[str, Any]] = []
+    for ticker in requested:
+        code = "fetch_failed"
+        try:
+            payload = fmp_quote_fetcher(ticker)
+        except Exception:
+            payload = None
+        row = _quote_row(payload, ticker)
+        if row is not None:
+            observation, code = _normalize_market_quote(
+                ticker=ticker,
+                raw_quote=row,
+                retrieved_at=retrieval_text,
+                source="FMP",
+                source_field="price",
+                market_time_field="timestamp",
+                source_document="quote",
+                is_fallback=False,
+                fallback_from=None,
+            )
+            if observation is not None:
+                observations.append(observation)
+                continue
+        errors.append(_error("market_proxy", ticker, None, code or "fetch_failed"))
+    return _result(observations, errors)
+
+
 def _payload_rows(payload: Any, *, nested_key: str) -> list[dict[str, Any]]:
     if isinstance(payload, dict):
         nested = payload.get(nested_key)

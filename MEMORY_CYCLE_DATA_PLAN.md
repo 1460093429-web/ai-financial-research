@@ -941,3 +941,42 @@ production preview or acquisition/cache phase must first:
 4. retain the ten-slot partial-failure and sanitized-error behavior; and
 5. remain outside formal Dashboard navigation until page isolation,
    multilingual text, responsive layout, and global loading-order gates pass.
+
+## 21. Phase 4.8 shared FMP financial truth layer
+
+Phase 4.8 adds a caller-owned, side-effect-free FMP boundary in
+`providers/fmp_financial_data.py`. The caller supplies the JSON callable and
+aware retrieval time; the provider does not read credentials, environment,
+Streamlit state, files, or a clock. Raw profile, quote, quarterly/annual income,
+balance-sheet, and cash-flow families remain separate and retain exact symbol,
+CIK when supplied, provider period metadata, currency, and source fields.
+Errors expose only stable family/ticker/endpoint/code fields.
+
+`services/fmp_financial_normalization.py` rejects cross-symbol and CIK
+conflicts, unsupported provider TTM/LTM rows, missing period/currency metadata,
+invalid numeric values, and pre-2025 SNDK statement history. It never maps
+SNDK to WDC. Monetary values normalize once to full reported-currency units.
+Reported margins convert ratio to percent once; otherwise same-row margins may
+be derived. CapEx is the magnitude of a reported non-positive cash outflow and
+FCF is accepted only when it agrees with OCF minus that magnitude. TTM income
+and cash flow are built only from four unique, continuous, same-ticker,
+same-currency quarters. Balance-sheet fields remain point-in-time.
+
+`services/fmp_financial_snapshot.py` consumes only normalized observations and
+an injected evaluation time. It keeps current quote, TTM, annual, quarterly,
+and latest-balance periods explicit. Revenue growth, inventory growth, net
+debt, FCF margin, average-balance ROE/ROA, actual-tax-rate ROIC, and P/E, P/S,
+P/B, and EV/EBITDA are derived only when their required periods, currencies,
+and positive denominators are verifiable. Missing inputs remain unavailable;
+real zero values are not replaced. The cash definition is the first complete
+FMP cash-plus-short-term-investments field, without adding overlapping fields.
+
+The minimal `services/memory_cycle_fmp_binding.py` acquires FMP quotes for MU,
+SNDK, SMH, and SOXX plus FMP quarterly income statements/profile identity for
+MU and SNDK. A dedicated primary FMP market wrapper records `source=FMP`,
+`source_type=proxy`, `is_fallback=false`, the provider timestamp, currency, and
+quote document. It then reuses the Phase 4.7 financial wrapper and live
+orchestrator, preserving the fixed ten-slot Phase 4.6 result. Missing metadata
+remains missing and one acquisition failure remains partial. No Yahoo call,
+DRAM/NAND/HBM data, cache, score, cycle phase, UI, route, or Dashboard
+integration is part of this binding.

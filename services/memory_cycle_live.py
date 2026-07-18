@@ -377,14 +377,16 @@ def _internal_error_result() -> dict[str, Any]:
 
 def build_live_memory_cycle_result(
     *,
-    yahoo_quote_fetcher: Callable[[str], Any],
-    fmp_income_statement_fetcher: Callable[[str], Any],
+    yahoo_quote_fetcher: Callable[[str], Any] | None = None,
+    fmp_income_statement_fetcher: Callable[[str], Any] | None = None,
     retrieved_at: Any,
     evaluated_at: Any,
     fmp_quote_fetcher: Callable[[str], Any] | None = None,
     fmp_identity_fetcher: Callable[[str], Any] | None = None,
     market_tickers: Any = SUPPORTED_MARKET_TICKERS,
     financial_tickers: Any = SUPPORTED_FINANCIAL_TICKERS,
+    market_observation_fetcher: Callable[..., Any] | None = None,
+    financial_observation_fetcher: Callable[..., Any] | None = None,
 ) -> dict[str, Any]:
     """Fetch injected raw data and build the Phase 4.6 ten-slot result."""
 
@@ -396,12 +398,17 @@ def build_live_memory_cycle_result(
     financial_scope = _scope_copy(financial_tickers)
 
     try:
-        raw_market_result = fetch_market_observations(
-            market_scope,
-            yahoo_quote_fetcher=yahoo_quote_fetcher,
-            fmp_quote_fetcher=fmp_quote_fetcher,
-            retrieved_at=retrieved_at,
-        )
+        if market_observation_fetcher is None:
+            raw_market_result = fetch_market_observations(
+                market_scope,
+                yahoo_quote_fetcher=yahoo_quote_fetcher,
+                fmp_quote_fetcher=fmp_quote_fetcher,
+                retrieved_at=retrieved_at,
+            )
+        else:
+            raw_market_result = market_observation_fetcher(
+                market_scope, retrieved_at=retrieved_at
+            )
     except Exception:
         raw_market_result = _provider_failure(
             family="market_proxy", tickers=market_scope
@@ -413,12 +420,17 @@ def build_live_memory_cycle_result(
     )
 
     try:
-        raw_financial_result = fetch_financial_observations(
-            financial_scope,
-            fmp_income_statement_fetcher=fmp_income_statement_fetcher,
-            fmp_identity_fetcher=fmp_identity_fetcher,
-            retrieved_at=retrieved_at,
-        )
+        if financial_observation_fetcher is None:
+            raw_financial_result = fetch_financial_observations(
+                financial_scope,
+                fmp_income_statement_fetcher=fmp_income_statement_fetcher,
+                fmp_identity_fetcher=fmp_identity_fetcher,
+                retrieved_at=retrieved_at,
+            )
+        else:
+            raw_financial_result = financial_observation_fetcher(
+                financial_scope, retrieved_at=retrieved_at
+            )
     except Exception:
         raw_financial_result = _provider_failure(
             family="company_financial",

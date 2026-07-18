@@ -513,3 +513,28 @@ This recommendation does not approve a Dashboard Section. Formal navigation
 remains blocked until authorized acquisition, cache/refresh, page error
 isolation, three-language text, responsive/dark-mode QA, global loading-order
 resolution, and every other integration gate are satisfied.
+
+## 18. Phase 4.8 shared truth layer and FMP-only binding boundary
+
+Phase 4.8 implements a shared FMP provider, normalization layer, and financial
+snapshot service outside Streamlit. Acquisition remains caller-owned and no
+cache is introduced. The layer validates exact issuer identity, preserves
+period/currency/source metadata, builds TTM only from four continuous
+quarters, keeps balance values point-in-time, normalizes CapEx/FCF semantics,
+and returns unavailable instead of guessed or zero-filled data.
+
+Memory Cycle gains an isolated FMP-only binding, not a Dashboard route. It
+requests only four FMP quotes and MU/SNDK profile plus quarterly income data,
+then supplies primary-FMP market observations and existing FMP financial
+observations to `build_live_memory_cycle_result`. The existing Yahoo-primary
+and FMP-fallback API remains unchanged for existing consumers. The new binding
+does not call it, does not silently fall back, and preserves the ten canonical
+slots, quality counts, partial failure, sanitized errors, staleness, and
+contract validation from Phases 4.6 and 4.7.
+
+This boundary deliberately excludes a Memory Cycle page, formal navigation,
+score, cycle phase, industry DRAM/NAND/HBM pricing, cache, refresh, and current
+time lookup. Before any future formal integration, run a controlled live FMP
+metadata smoke, confirm SNDK issuer coverage, add service-level cache and
+refresh isolation, and exercise an independent production preview in all
+three languages.
