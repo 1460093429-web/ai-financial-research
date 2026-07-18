@@ -6,10 +6,11 @@ This document characterizes the current repository before any production
 Dashboard integration. It does not authorize a route, Section label, provider,
 cache, session key, score, or cycle-phase implementation.
 
-**Current decision: `WAIT_FOR_MINIMUM_PRODUCTION_DATA_PIPELINE`.** Keep the
-static Demo independent until a minimum production data pipeline and its error,
-provenance, refresh, and cache boundaries have been implemented and tested.
-Do not add a Static Preview to the production Dashboard now.
+The Phase 4.5 decision was `WAIT_FOR_MINIMUM_PRODUCTION_DATA_PIPELINE`.
+Phase 4.6 now provides the pure validation/orchestration portion, but not live
+acquisition, provider metadata completion, cache/refresh, or page isolation.
+**Current decision: `WAIT_FOR_PROVIDER_METADATA_COMPLETION`.** Keep the static
+Demo independent. Do not add a Static Preview to the production Dashboard now.
 
 The decision is based on data credibility, user experience, misleading-current-
 data risk, implementation cost, real-source availability, and the current lack
@@ -165,9 +166,11 @@ relabeled, cached, or refreshed as production data.
 ```text
 authorized provider responses
   -> provider-specific normalization
+  -> verified raw observations
+  -> Phase 4.6 production validation
   -> Memory Cycle adapters
   -> metric contract records
-  -> source-priority and fallback service
+  -> Phase 4.6 partial-result orchestration
   -> pure view model
   -> existing UI component
 ```
@@ -199,8 +202,10 @@ not fetch, normalize, calculate provider priority, or cache data.
   mappings are not production-tested.
 - News signals need durable citation retention, extraction-method metadata, and
   confidence review; Daily Brief is an aggregator, not a fact source.
-- No Memory Cycle production service owns source priority, refresh isolation,
-  partial failure, or a page-level error envelope.
+- Phase 4.6 now owns pure observation validation, canonical ten-slot ordering,
+  per-observation partial failure, quality counts, and a sanitized backend
+  result envelope. It does not own live source priority, provider
+  normalization, refresh isolation, cache, or a page-level error boundary.
 
 Production data would provide materially greater user value, but it has high
 implementation and validation cost. Static fixture values cannot fill these
@@ -217,10 +222,11 @@ gaps because they are synthetic test observations, not delayed production data.
 | Immediate implementation cost | Lower | Higher |
 | Current readiness | Demo-ready, not production-ready | Not ready |
 
-**Recommendation:** wait for the minimum Production Data adapter/provider and
-service boundary before adding a formal Dashboard Section. Continue using the
-independent Demo for design and QA. This is conclusion 3 from the approved
-decision set, not approval to begin production integration in this phase.
+**Recommendation:** `WAIT_FOR_PROVIDER_METADATA_COMPLETION` before adding a
+formal Dashboard Section. The Phase 4.6 pure service boundary is necessary but
+does not make the audited provider helpers production-ready. Continue using the
+independent Demo for design and QA; this is not approval to begin production
+integration in this phase.
 
 ## 8. Page-level error isolation contract
 
@@ -274,6 +280,9 @@ Rules:
 ## 10. Cache ownership
 
 Cache design belongs to provider/service functions, never to the component.
+Phase 4.6 intentionally implements no cache and imports no existing Dashboard
+cache. The rules below remain future requirements, not claims about the current
+pure service.
 
 ### Company financials
 
@@ -307,6 +316,10 @@ Cache design belongs to provider/service functions, never to the component.
 - Never call a global `st.cache_data.clear()` or another workflow's `.clear()`.
 
 ## 11. Refresh strategy
+
+Phase 4.6 adds no refresh control, nonce, session key, or cache-clearing path.
+The following strategy remains deferred until a provider/cache owner is
+separately approved.
 
 - Initial Production Data entry may load only Memory Cycle service inputs after
   the future Dashboard shell/loading-order issue is explicitly resolved.
@@ -374,19 +387,76 @@ Do not modify Dashboard navigation until every applicable gate is satisfied:
 - [ ] static fixtures remain identified as tests and are never a production fallback;
 - [ ] no composite Memory Cycle score or definitive cycle phase is introduced.
 
-## 15. Phase 4.6 recommended scope
+## 15. Phase 4.6 implemented backend boundary
 
-Phase 4.6 should **build the minimum Production Data pipeline before any formal
-Dashboard entry**. Keep the independent Demo unchanged while designing and
-testing one or two authorized, high-confidence metric families end to end:
+Phase 4.6 implements the minimum pure backend in
+`services/memory_cycle_production.py` without adding a formal Dashboard entry.
+The actual flow is:
 
-1. choose an authorized provider and explicit source priority;
-2. implement provider-only raw acquisition behind injected/test doubles;
-3. adapt records into the existing metric contract with full timestamps and
-   fallback metadata;
-4. add service-owned cache/refresh and partial-failure tests;
-5. validate page-ready results through the existing view model/component using
-   mocked data only.
+```text
+caller-owned acquisition and verified normalization
+  -> injected raw observations
+  -> Phase 4.6 validation and unit/period checks
+  -> existing Memory Cycle adapters and 15-field contract
+  -> stable service envelope; ten canonical slots for non-catastrophic results
+```
 
-Phase 4.6 must not yet add the Dashboard Section unless its own separately
-approved scope includes every formal integration gate above.
+The market scope is one uniform `latest_price` proxy for MU, SNDK, SMH, and
+SOXX. Accepted observations require explicit USD currency, positive numeric
+price, aware price and retrieval timestamps, a supported price field, source,
+source document/provenance, and complete fallback metadata. These checks
+validate declared metadata shape; caller-owned acquisition must authenticate
+and authorize the actual source. This does not make any
+existing quote helper production-ready: the audited helpers omit some of that
+metadata. A 20-session return remains deferred because current history paths do
+not prove one adjustment, currency, valid-session, and provenance contract.
+
+The financial scope is exactly Revenue, Gross Margin, and Operating Margin for
+MU and SNDK. Revenue is normalized once to USD millions from explicit USD,
+thousands, millions, or billions. Margin ratio-to-percent conversion occurs
+only for an allowlisted ratio source field; explicit percent fields are not
+rescaled. Fiscal label, annual/quarterly type, period end, retrieval time,
+field/document provenance, and fallback lineage are supplied, not inferred.
+News, fixtures, demos, analyst/model estimates, and unverified source fields
+cannot become company-reported metrics. Phase 4.6 accepts only named source
+aliases, rejects conflicting ticker/issuer and explicit annual/quarterly
+evidence, and requires fallback source and `fallback_from` to resolve to
+different approved providers. It does not treat generic “Primary/Secondary
+financial API” labels as verified provider identities.
+
+For `ok`, `partial`, and `empty`, the full service returns ten metrics in
+canonical order plus expected/successful/stale/missing/unavailable counts and
+allowlisted error objects. A catastrophic `error` instead returns a sanitized
+empty-metrics envelope. One bad ticker or field does not remove valid siblings.
+Adapter exceptions and invalid adapter return types remain isolated to one
+slot. User-visible missing notes are neutral; structured codes carry the
+validation reason without echoing unsafe metadata. `evaluated_at` is mandatory;
+inputs are not mutated and no hidden clock is read.
+
+No provider wrapper, live source priority, cache, network smoke test, refresh,
+session state, view-model/component execution, page, route, navigation, or
+Dashboard change is part of Phase 4.6. Direct DRAM/NAND/HBM data, inventory,
+capacity, ASP, bit growth, composite score, and cycle phase remain unavailable.
+The independent static Demo is unchanged and is never a production fallback.
+
+## 16. Phase 4.7 gate and recommendation
+
+The Phase 4.6 service is necessary but not sufficient for formal integration.
+Every applicable gate in section 14 remains binding. Phase 4.7 should choose
+one separately approved direction:
+
+1. **Provider Metadata Completion (recommended):** verify aware quote time,
+   currency, and provenance for all four market tickers; verify field-level
+   fiscal label/type, period end, unit/currency, and source document for both
+   companies; then test provider failures, source priority, fallback selection,
+   cache keys/TTLs, and refresh isolation with injected fakes.
+2. **Production Preview Harness:** independently exercise the pure Phase 4.6
+   service without production routing and visibly distinguish usable, stale,
+   missing, unavailable, fallback, and error results. It must not use static
+   fixtures as production data or imply that live acquisition exists.
+
+Provider Metadata Completion is recommended first because no audited current
+fetcher emits either complete accepted raw contract. Neither direction
+implicitly approves a Dashboard Section. Formal navigation remains blocked
+until provider metadata, cache/refresh, page error isolation, three languages,
+responsive layouts, loading order, and every other integration gate are met.

@@ -535,3 +535,254 @@ that no real data is fetched. Observable fixture records are re-evaluated only
 on fresh demo copies against the fixed demo date, so expired values display as
 stale with deterministic `staleness_days`; source dates and financial values
 are never advanced or replaced.
+
+## 19. Phase 4.6 minimal production data pipeline
+
+Phase 4.6 adds the pure, observation-in/contract-out service in
+`services/memory_cycle_production.py`. It is a production validation and
+orchestration boundary, not a live fetcher. The module reuses the existing
+Memory Cycle adapters and 15-field metric contract, accepts caller-injected raw
+observations, and returns fresh metrics plus a sanitized result envelope. It
+performs no network request, provider-client creation, environment or secret
+lookup, file access, cache operation, session-state mutation, Streamlit
+rendering, composite scoring, or cycle-phase inference.
+
+No provider wrapper was added. The repository audit found no existing helper
+that can directly produce an accepted raw observation:
+
+- current-price helpers omit at least currency, reliable timezone-aware price
+  time, retrieval time, field/document provenance, or complete fallback
+  lineage;
+- `financials.fetch_historical_prices` retains provider name and trading dates,
+  but not one verified adjusted-price, currency, retrieval-time, and fallback
+  contract across MU, SNDK, SMH, and SOXX;
+- company snapshots can mix FMP and Yahoo fields under an aggregate source and
+  do not retain per-field fiscal label/type, currency/unit, or provenance;
+- Dashboard, card, and What-if helpers are page/cache-specific and are not
+  imported by this service.
+
+These helpers may become dependency sources only after a future normalization
+boundary supplies verified metadata. Incomplete output is rejected; the
+service never fills gaps from a ticker, the current time, provider list order,
+or an undocumented convention.
+
+### 19.1 Locked market semantic and raw observation contract
+
+All four Phase 4.6 market metrics use the uniform `latest_price` semantic. It
+was selected instead of a 20-session return because the current history paths
+cannot prove one adjustment, currency, valid-session-count, and provenance
+contract across all four symbols.
+
+| Ticker | Metric ID | Source type | Frequency | Maximum confidence |
+| --- | --- | --- | --- | --- |
+| MU | `mu_market_price_proxy` | `proxy` | `daily` | `medium` |
+| SNDK | `sndk_market_price_proxy` | `proxy` | `daily` | `medium` |
+| SMH | `smh_market_price_proxy` | `proxy` | `daily` | `medium` |
+| SOXX | `soxx_market_price_proxy` | `proxy` | `daily` | `medium` |
+
+An accepted market observation provides:
+
+```text
+ticker, positive finite numeric value, metric_kind=latest_price,
+unit=USD, currency=USD, as_of, retrieved_at, source, source_field,
+source_document or provenance, is_fallback, fallback_from
+```
+
+Supported source fields are explicit price fields (`regularMarketPrice`,
+`postMarketPrice`, `preMarketPrice`, `price`, `last`, `lastPrice`,
+`last_price`, or `close`), not unrelated fields such as market capitalization.
+Booleans, numeric strings, zero, negative values, NaN, and infinity are
+rejected. Declared market sources are restricted to normalized aliases for
+IBKR/Interactive Brokers, Yahoo/Yahoo Finance/yfinance, and FMP/Financial
+Modeling Prep. Evidence must syntactically identify a quote, market-data or
+price snapshot, historical price/close, or OHLCV record; a financial statement
+cannot be relabelled as quote evidence. Explicit evidence for another supported
+ticker is rejected. These are syntactic boundary checks, not authentication:
+caller-owned acquisition remains responsible for proving that a declared
+provider and source document are genuine and authorized.
+
+`as_of` is the security price time and must be an aware `datetime` or offset ISO
+timestamp. `retrieved_at` is a separate aware timestamp and must satisfy
+`as_of <= retrieved_at <= evaluated_at`. The service does not substitute
+retrieval or page-access time for price time. Output notes preserve currency,
+source field, source document/provenance, and fallback lineage because the
+existing contract has no separate top-level fields for those items. Every
+market record remains explicitly a proxy/estimate; it is not DRAM, NAND, HBM,
+inventory, supply, demand, or a cycle conclusion.
+
+### 19.2 Company financial raw contract and normalization
+
+Only these six company-reported observations are supported:
+
+```text
+MU:   revenue, gross_margin, operating_margin
+SNDK: revenue, gross_margin, operating_margin
+```
+
+Every accepted observation supplies:
+
+```text
+ticker, field, finite numeric value, unit, currency when monetary,
+fiscal_period, period_type, as_of, retrieved_at, source, source_field,
+source_document or declared provenance, is_fallback, fallback_from
+```
+
+`fiscal_period` is an explicit single-period label such as `FY2026 Q3`,
+`Q1 2026`, `FY2026`, or `2026`. `period_type` is separately restricted to
+`quarterly` or `annual`: a quarterly label must contain exactly one year and
+one Q1-Q4 token, while an annual label must identify exactly one year and no
+quarter. Mixed periods, estimate suffixes, `latest`, `recent`, `current`, `TTM`, `unknown`,
+`estimate`, `consensus`, `forecast`, `projected`, and `guidance` are rejected.
+`as_of` is the statement period end and may be a date-only value;
+`retrieved_at` and caller-required `evaluated_at` are aware timestamps.
+
+Declared financial evidence must syntactically identify a company report or
+statement, such as an income statement, Form 10-Q/10-K, annual/quarterly
+report, earnings release, or SEC/company filing. Declared Daily Brief, news,
+fixture, demo, analyst article, consensus/model estimate, and synthetic/mock
+inputs are rejected. An explicit 10-Q/quarterly/Q1-Q4 declaration cannot back
+an annual observation, and an explicit 10-K/annual declaration cannot back a
+quarterly observation. The accepted source identifier must be one exact,
+named FMP, Yahoo, SEC/EDGAR, Micron, or Sandisk alias; generic “Primary API” or
+composite names containing an approved provider token are not accepted. An
+explicit MU/SNDK issuer identity must agree across source, document,
+provenance, reference, and fallback metadata. The service does not authenticate
+those declarations; caller-owned acquisition must establish source
+authenticity and authorization. An optional safe `source_reference` is
+preserved only as an HTTPS URL without query/fragment/userinfo or as a
+conservative identifier. Credentials, secret-looking tokens, local paths,
+control characters, traceback/response-body text, and JSON/XML-like payloads
+are rejected from all metadata that could otherwise be echoed.
+
+Revenue is normalized exactly once to `USD millions` with one shared MU/SNDK
+mapping:
+
+| Explicit input unit | Conversion to `USD millions` |
+| --- | --- |
+| `USD` | divide by 1,000,000 |
+| `USD thousands` | divide by 1,000 |
+| `USD millions` | unchanged |
+| `USD billions` | multiply by 1,000 |
+
+Revenue currently requires `currency=USD`; no FX conversion occurs. Unknown
+units, currency/unit conflicts, and a non-finite result after explicit scaling
+become missing with an input-validation code before the adapter is called.
+The accepted Revenue `source_field` is exactly `revenue`; aliases are not
+inferred. Zero and negative finite revenue values remain values under the
+existing contract rather than being silently rewritten.
+
+Margins are uniformly output as `percent` and their input `currency` must be
+absent or null. Conversion is controlled only by the explicit source-field
+mapping below:
+
+| Field | Ratio source fields | Percent source field |
+| --- | --- | --- |
+| Gross margin | `grossProfitRatio`, `grossProfitMargin` | `grossMarginPercent` |
+| Operating margin | `operatingIncomeRatio`, `operatingProfitMargin` | `operatingMarginPercent` |
+
+A ratio is multiplied by 100 once; a percent is unchanged. The service never
+uses a “less than one” heuristic. A field/unit mismatch is ambiguous and
+becomes missing; an unlisted margin source field becomes unavailable. Finite
+zero, negative, and extreme margins are not clamped. Fiscal label, period type,
+original unit, currency, field/document provenance, optional reference, and
+fallback lineage are preserved in existing contract fields or `notes`.
+
+### 19.3 Service interface and canonical result
+
+The public pure functions are:
+
+```python
+build_market_proxy_metrics(observations, *, evaluated_at)
+build_company_financial_metrics(observations, *, evaluated_at)
+build_memory_cycle_production_metrics(
+    *, market_observations, financial_observations, evaluated_at
+)
+```
+
+`evaluated_at` is mandatory and aware. No function reads a hidden clock. Inputs
+are copied without sorting or mutation, and each call returns new lists,
+dictionaries, metric records, and error records.
+
+The stable canonical order is:
+
+1. MU market-price proxy
+2. SNDK market-price proxy
+3. SMH market-price proxy
+4. SOXX market-price proxy
+5. MU Revenue
+6. MU Gross Margin
+7. MU Operating Margin
+8. SNDK Revenue
+9. SNDK Gross Margin
+10. SNDK Operating Margin
+
+The full result contains `metrics`, `status`, `expected_metric_count=10`,
+`successful_metric_count`, `stale_metric_count`, `missing_metric_count`,
+`unavailable_metric_count`, and `errors`. Successful count includes both `ok`
+and `stale` records with values; stale is also counted separately. Missing and
+unavailable remain distinct.
+
+- `ok`: every expected slot has an `ok` or `stale` value;
+- `partial`: non-empty caller input has recoverable missing, unavailable,
+  invalid, or absent slots; this also covers an invalid-only call with zero
+  successful slots so one bad observation never becomes a system error;
+- `empty`: both observation collections are empty; ten missing placeholders are
+  returned with no invented values;
+- `error`: an unexpected internal failure prevents safe orchestration.
+
+Input order does not affect metric order. Errors are sorted by family, ticker,
+field, and code and contain exactly those four keys. Stable codes cover
+unsupported ticker/field/kind/source, missing or invalid values, unit/currency/
+period/time/provenance failures, ambiguous margin units, invalid references,
+incomplete fallback metadata, duplicates, `fetch_failed`, `adapter_failed`,
+identity/cadence conflicts, and overall `internal_error`. An injected
+failed-observation envelope may use
+`error` or `fetch_error`; its value is never copied to output. Exception text,
+traceback, response bodies, headers, local paths, URL credentials, keys, and
+tokens are never returned.
+
+Invalid or missing values do not erase other verified metadata. When the
+remaining timestamp order, source, unit/currency, and fallback lineage are
+valid, the missing contract record retains them while keeping `value=null`.
+
+### 19.4 Fallback, stale, and cache boundary
+
+The service accepts an already-selected fallback observation only when it is
+otherwise complete, both source identifiers are approved, their canonical
+provider identities are different, `is_fallback=true`, and `fallback_from` is
+named. Aliases for the same provider cannot manufacture fallback lineage. A
+primary observation cannot carry any non-missing `fallback_from`, and a
+rejected source cannot retain a fallback badge. Fallback does not change
+`as_of` or `retrieved_at`, reset staleness, or raise confidence; accepted
+fallbacks use low confidence. No live provider priority or fallback fetch is
+implemented, and news/static fixtures are never company-financial fallbacks.
+
+Existing contract thresholds remain authoritative: market proxies use the
+audited `daily` rule and the three generic financial IDs retain their audited
+`event_driven` rule. A stale value is kept and counted as successful; it is not
+rewritten as current or discarded.
+
+Phase 4.6 implements no cache and reuses no Dashboard cache. Future ownership
+belongs to a dedicated provider/service boundary: market TTL may be 15–60
+minutes with ticker and semantic in the key; financial TTL may be 6–24 hours
+with ticker, field, fiscal period, currency, and unit isolated. Cache-hit or
+cached-at time must never replace price time, filing period end, or original
+retrieval time.
+
+### 19.5 Remaining unavailable data and Phase 4.7 gate
+
+Exact DRAM/NAND/HBM and SSD prices or ASPs; inventory and inventory days;
+channel/module inventory; bit supply/demand growth; shipments; wafer,
+packaging, TSV, CoWoS, and utilization capacity; segment data; guidance;
+estimates; news inference; composite scoring; and cycle phase remain
+unavailable. Equity/ETF proxies do not populate those fields.
+
+This pipeline is not imported by `dashboard.py`, is not passed through the
+view model/component, creates no page, route, sidebar item, refresh control, or
+session state, and has not been validated with a real network request. Before
+formal integration, a separately approved provider metadata boundary must
+prove price time/currency/provenance and financial fiscal/source metadata,
+define source priority and cache/refresh ownership, and pass page-isolation and
+multilingual integration gates. A separate preview harness may instead
+exercise the pure service without production navigation, but must show
+missing/unavailable states and never use static fixtures as production data.
