@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 import hashlib
 import html
 import io
@@ -22,6 +22,7 @@ import yfinance as yf
 
 from components.market_cards import render_metric_row, render_snapshot_card
 from components.news_daily_brief import render_news_daily_brief
+from components.value_investing import render_value_investing_dashboard
 from config import CACHE_DIR, get_fmp_api_key, get_openai_client
 from dashboard_support.company import (
     COMPANY_NAMES,
@@ -47,6 +48,7 @@ from etf_news_monitor import (
     parse_manual_etf_flow_text,
 )
 from factor_watch import render_factor_watch_section
+from financials import _fmp_get as _fetch_fmp_json
 from financials import fetch_company_news, fetch_general_news, fetch_historical_prices, get_company_snapshot as get_fmp_company_snapshot
 from macro_data import build_macro_snapshot, fetch_indicator, fetch_macro_calendar, fetch_market_series, fetch_treasury_rates
 from option_walls import compute_option_walls
@@ -64,6 +66,10 @@ from services.news_normalization import (
     _normalize_yfinance_news_item,
     _trendforce_items_from_regex,
     _trendforce_items_from_soup,
+)
+from services.value_investing import (
+    build_value_investing_view_model,
+    load_value_investing_snapshot,
 )
 from services.news_daily_brief import (
     daily_brief_fingerprint,
@@ -1213,53 +1219,32 @@ def render_options_section():
         st.warning(f"{ticker} {t('options_unavailable')}: {exc}")
 
 
-def render_value_section(snapshots=None):
+def render_value_section():
     st.caption(t("value_caption"))
+    language = st.session_state.get("language", "English")
+    try:
+        api_key = get_fmp_api_key()
+    except Exception:
+        api_key = None
+
+    def fmp_json_fetcher(endpoint, **params):
+        if not api_key:
+            raise ValueError("FMP acquisition is unavailable")
+        return _fetch_fmp_json(endpoint, api_key, **params)
+
     for ticker in load_watchlist():
-        snapshot = None
-        try:
-            snapshot = get_company_snapshot(ticker)
-        except Exception:
-            snapshot = (snapshots or {}).get(ticker)
-        with st.expander(f"{ticker} | {company_name(ticker, snapshot)}", expanded=ticker == "NVDA"):
-            st.markdown(f"**{ticker} | {company_name(ticker, snapshot)}**")
+        request_time = datetime.now(timezone.utc).isoformat()
+        snapshot = load_value_investing_snapshot(
+            ticker,
+            fmp_json_fetcher=fmp_json_fetcher,
+            retrieved_at=request_time,
+            evaluated_at=request_time,
+        )
+        view_model = build_value_investing_view_model(snapshot, language=language)
+        display_name = view_model.get("company_name") or ticker
+        with st.expander(f"{ticker} | {display_name}", expanded=ticker == "NVDA"):
             st.caption(supply_chain_role(ticker))
-            if not snapshot:
-                st.write(t("valuation_unavailable"))
-                continue
-            st.caption(f"{t('source')}: {snapshot['source']} | {snapshot.get('sector') or 'N/A'} | {snapshot.get('industry') or 'N/A'}")
-            render_metric_row([
-                ("P/E", format_ratio(snapshot["trailing_pe"])),
-                ("P/B", format_ratio(snapshot["price_to_book"])),
-                ("P/S", format_ratio(snapshot["price_to_sales"])),
-                ("EV/EBITDA", format_ratio(snapshot["ev_to_ebitda"])),
-                ("ROE", format_percent(snapshot["return_on_equity"])),
-                ("ROA", format_percent(snapshot["return_on_assets"])),
-            ])
-            render_metric_row([
-                (t("gross_margin"), format_percent(snapshot["gross_margin"])),
-                (t("operating_margin"), format_percent(snapshot["operating_margin"])),
-                (t("net_margin"), format_percent(snapshot["net_margin"])),
-                (t("fcf_margin"), format_percent(snapshot["free_cash_flow_margin"])),
-                (t("current_ratio"), format_ratio(snapshot["current_ratio"])),
-                (t("quick_ratio"), format_ratio(snapshot["quick_ratio"])),
-                (t("debt_equity"), format_ratio(snapshot["debt_to_equity"])),
-            ])
-            render_metric_row([
-                (t("revenue_yoy"), format_percent(snapshot["revenue_growth_yoy"])),
-                (t("gross_profit_growth"), format_percent(snapshot["gross_profit_growth"])),
-                (t("operating_income_growth"), format_percent(snapshot["operating_income_growth"])),
-                (t("net_income_growth"), format_percent(snapshot["net_income_growth"])),
-                (t("eps_growth"), format_percent(snapshot["eps_growth"])),
-            ])
-            render_metric_row([
-                (t("current_price"), format_money(snapshot["price"], 2)),
-                (t("consensus_target"), format_money(snapshot["analyst_target"], 2)),
-                (t("high_target"), format_money(snapshot["analyst_target_high"], 2)),
-                (t("low_target"), format_money(snapshot["analyst_target_low"], 2)),
-                (t("upside_downside"), "N/A" if snapshot["analyst_upside_pct"] is None else f"{snapshot['analyst_upside_pct']:+.1f}%"),
-                (t("analyst_rating"), snapshot.get("analyst_rating") or "N/A"),
-            ])
+            render_value_investing_dashboard(view_model, language=language)
 
 
 def _quarter_label_from_date(value):

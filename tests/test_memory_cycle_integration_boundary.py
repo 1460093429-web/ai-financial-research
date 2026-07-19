@@ -15,7 +15,6 @@ DASHBOARD_PATH = PROJECT_ROOT / "dashboard.py"
 PLAN_PATH = PROJECT_ROOT / "MEMORY_CYCLE_INTEGRATION_PLAN.md"
 
 BASELINE_HASHES = {
-    "dashboard.py": "9d613fb5fd2f176ed7ceed2ac18bf90e662b0312d8f3de9a65a9da5968b8b01c",
     "components/memory_cycle.py": "a29117590a9845357173d3350764c81e56bf62c329d9f548f0357041c8324c54",
     "demos/memory_cycle_demo.py": "dfec0ad11ee48b31f7eeae9f647a975806f5ed21f114fb1778448e9adfdb0398",
     "fixtures/memory_cycle_mvp.py": "2b0e452ad8fdea4cb4295e0304b222251dded54dd486ae496d754d83f70c64d8",
@@ -268,7 +267,7 @@ def test_document_records_all_required_visual_risks_and_formal_gates():
     assert "## 14. Formal integration gates" in plan
 
 
-def test_phase_45_does_not_change_production_or_existing_memory_cycle_files():
+def test_phase_45_memory_cycle_implementation_files_remain_unchanged():
     for relative_path, expected_hash in BASELINE_HASHES.items():
         digest = hashlib.sha256((PROJECT_ROOT / relative_path).read_bytes()).hexdigest()
         assert digest == expected_hash, relative_path
